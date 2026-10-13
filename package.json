@@ -8,6 +8,6 @@
     "test:browser": "node map-behaviour-test.mjs"
   },
   "devDependencies": {
-    "puppeteer": "^24.40.0"
+    "puppeteer": "^25.13.0"
   }
 }

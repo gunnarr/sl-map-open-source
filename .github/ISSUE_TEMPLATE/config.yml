@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Säkerhetsproblem / Security problem
+    url: https://github.com/gunnarr/sl-map-open-source/security/advisories/new
+    about: Rapportera privat, inte i ett öppet ärende. / Report privately, not in a public issue.
+  - name: Frågor om apparna eller sl-map.gunnar.se / Questions about the apps or the site
+    url: https://sl-map.gunnar.se/contact.html
+    about: Apparna och sajtens övriga sidor ingår inte i det här repot. / The apps and the site's other pages are not in this repo.

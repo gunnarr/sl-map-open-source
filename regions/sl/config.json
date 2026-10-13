@@ -1,0 +1,83 @@
+{
+  "region_id": "sl",
+  "region_name": "Stockholm",
+  "operator_name": "SL",
+  "language": "sv",
+  "locale": "sv-SE",
+
+  "branding": {
+    "app_name": "SL Live Map",
+    "app_short_name": "SL Live",
+    "toolbar_title": "SL Live Map",
+    "toolbar_subtitle": "Realtidspositioner i Stockholm",
+    "meta_description": "Realtidskarta över SL:s bussar, tunnelbana, pendeltåg, spårväg och båtar i Stockholm.",
+    "og_title": "SL Live Map — Stockholm",
+    "og_description": "Realtidskarta över SL-fordon i Stockholm",
+    "page_title_suffix": " — SL Live Map",
+    "share_text": "Realtidskarta över SL-fordon i Stockholm"
+  },
+
+  "geo": {
+    "default_lat": 59.33,
+    "default_lon": 18.07,
+    "default_zoom": 13
+  },
+
+  "api": {
+    "gtfs_rt_url": "https://opendata.samtrafiken.se/gtfs-rt/sl/VehiclePositions.pb",
+    "gtfs_static_url": "https://opendata.samtrafiken.se/gtfs/sl/sl.zip",
+    "transport_authority_id": 1
+  },
+
+  "identity": {
+    "launch_date": "2026-02-17"
+  },
+
+  "transport": {
+    "route_type_mode": {
+      "100": "TRAIN",
+      "106": "TRAIN",
+      "401": "METRO",
+      "700": "BUS",
+      "714": "BUS",
+      "900": "TRAM",
+      "1000": "SHIP",
+      "1501": "TAXI"
+    },
+    "metro_groups": {
+      "10": "blue", "11": "blue",
+      "13": "red", "14": "red",
+      "17": "green", "18": "green", "19": "green"
+    },
+    "colors": {
+      "metro": {"green": "#148541", "red": "#d71d24", "blue": "#007db8"},
+      "tram": "#1a5276",
+      "train": "#8e44ad",
+      "ship": "#00b4d8",
+      "bus": "#e3000b",
+      "blue_bus": "#0078b8",
+      "bus_minimal": "#f59e0b"
+    },
+    "blue_bus_lines": ["1","2","3","4","5","6","172","173","175","176","177","178","179","471","474","670","676","677","873","875"],
+    "tram_names": {
+      "7": "Spårväg City",
+      "12": "Nockebybanan",
+      "21": "Lidingöbanan",
+      "25": "Saltsjöbanan",
+      "26": "Saltsjöbanan",
+      "27": "Roslagsbanan",
+      "28": "Roslagsbanan",
+      "29": "Roslagsbanan",
+      "30": "Tvärbanan",
+      "31": "Tvärbanan"
+    },
+    "layers": [
+      {"key": "metro", "label": "T-bana", "color": "#00a651"},
+      {"key": "train", "label": "Pendeltåg", "color": "#8e44ad"},
+      {"key": "tram", "label": "Spårvagn", "color": "#1a5276"},
+      {"key": "ship", "label": "Båtar", "color": "#00b4d8"},
+      {"key": "bus", "label": "Bussar", "color": "#e3000b"}
+    ],
+    "station_labels": {"metro": "T", "tram": "S", "train": "J"}
+  }
+}

@@ -1,0 +1,30 @@
+name: Fel / Bug
+description: Något i koden fungerar inte som det ska. / Something in the code doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Vad händer? / What happens?
+      description: Och vad hade du väntat dig? / And what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Så återskapar man det / How to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Var? / Where?
+      description: Din egen kopia eller sl-map.gunnar.se? Webbläsare och enhet? / Your own copy or sl-map.gunnar.se? Browser and device?
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: "`git rev-parse --short HEAD` om du kör en egen kopia / if you run your own copy"

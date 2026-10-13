@@ -1,0 +1,2761 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- Begin the largest same-origin payload while Leaflet is downloading.
+       init() consumes this response; a failed speculative request falls back. -->
+  <script>
+    window.__initialVehicles = fetch('/api/vehicles').catch(() => null);
+  </script>
+  <!-- Everything deployment-specific (basemap tiles, analytics, app banner) lives
+       in site-config.js; this page only acts on it. Loaded synchronously so the
+       values exist before the code below and the map script run. -->
+  <script src="/site-config.js?v=3"></script>
+  <script>
+    (function () {
+      var S = window.SITE = window.SITE || {};
+      var screensaver = /[?&]screensaver(=|&|$)/.test(location.search);
+      // Smart App Banner for a native app (Safari on iPhone/iPad only). Written
+      // during parsing so Safari reads it like a static tag; left out in
+      // screensaver mode so a wall display in iPad Safari never shows it.
+      if (S.appBanner && S.appBanner.appId && !screensaver)
+        document.write('<meta name="apple-itunes-app" content="app-id=' + String(S.appBanner.appId).replace(/[^0-9]/g, '') + '">');
+      // Links to this deployment's own pages (menu items marked data-page, the
+      // footer credit). Without `pages` every link shows; with a list only those
+      // stay, so [] leaves just the map. Written during parsing, so hidden links
+      // never flash.
+      if (Array.isArray(S.pages)) {
+        var hide = ['about', 'news', 'contact', 'screensaver', 'install', 'credit']
+          .filter(function (p) { return S.pages.indexOf(p) < 0; })
+          .map(function (p) { return '[data-page="' + p + '"]'; });
+        // A menu column left with no visible link goes too, divider included.
+        var empty = '.dropdown-nav:not(:has(> a' + hide.map(function (h) { return ':not(' + h + ')'; }).join('') + '))';
+        if (hide.length) document.write('<style>' + hide.join(',') + ',' + empty + '{display:none!important}' +
+          '.dropdown-nav-grid:has(> ' + empty + ') > .dropdown-nav{border-left:0}</style>');
+      }
+      // Warm up the basemap: connect to the tile hosts and fetch the centre
+      // tiles of the default view while Leaflet is still downloading. Same
+      // theme rule as the map (dark unless the visitor picked light;
+      // screensaver is always dark) and the same {s}/{r} choice as Leaflet,
+      // so these are exactly the URLs Leaflet asks for a moment later.
+      var t = S.tiles || {};
+      var dark = true;
+      try { dark = localStorage.getItem('theme') !== 'light'; } catch (e) {}
+      if (screensaver) dark = true;
+      var layer = (dark ? t.dark : t.light) || t.light || t.dark;
+      if (!layer || !layer.url) return;
+      var subs = layer.url.indexOf('{s}') < 0 ? [''] : (layer.subdomains || 'abc');
+      var r = window.devicePixelRatio > 1 ? '@2x' : '';
+      var head = document.head;
+      function tileUrl(s, z, x, y) {
+        return layer.url.replace('{s}', s).replace('{z}', z).replace('{x}', x)
+          .replace('{y}', y).replace('{r}', r);
+      }
+      var origins = {};
+      for (var i = 0; i < subs.length; i++) {
+        try { origins[new URL(tileUrl(subs[i], 0, 0, 0)).origin] = 1; } catch (e) {}
+      }
+      Object.keys(origins).forEach(function (o) {
+        var l = document.createElement('link');
+        // No crossorigin, like the tile requests themselves — a CORS-mode
+        // preconnect would open a socket Leaflet's images cannot reuse.
+        l.rel = 'preconnect'; l.href = o;
+        head.appendChild(l);
+      });
+      (t.preload || []).forEach(function (c) {
+        // No crossorigin: match Leaflet's no-CORS image requests so the
+        // preloaded response is reused instead of downloaded twice.
+        var l = document.createElement('link');
+        l.rel = 'preload'; l.as = 'image';
+        l.href = tileUrl(subs[Math.abs(c[1] + c[2]) % subs.length], c[0], c[1], c[2]);
+        head.appendChild(l);
+      });
+    })();
+  </script>
+  <meta property="og:title" content="SL Live Map — Stockholm">
+  <meta property="og:description" content="Realtidskarta över SL-fordon i Stockholm">
+  <meta property="og:image" content="https://sl-map.gunnar.se/og-preview.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:url" content="https://sl-map.gunnar.se/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SL Live Map">
+  <meta property="og:locale" content="sv_SE">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="description" content="Realtidskarta över SL:s bussar, tunnelbana, pendeltåg, spårväg och båtar i Stockholm.">
+  <title>SL Live Map — Stockholm</title>
+  <link rel="canonical" href="https://sl-map.gunnar.se/">
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=2">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SL Live Map">
+  <link rel="apple-touch-icon" href="/icon-192.png?v=2">
+  <link rel="alternate" type="application/rss+xml" title="SL Live Map" href="/feed.xml">
+  <script type="application/ld+json">
+  [
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "SL Live Map",
+      "url": "https://sl-map.gunnar.se/",
+      "description": "Realtidskarta över SL:s bussar, tunnelbana, pendeltåg, spårväg och båtar i Stockholm.",
+      "inLanguage": "sv-SE"
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "SL Live Map",
+      "url": "https://sl-map.gunnar.se/",
+      "description": "Realtidskarta över Stockholms kollektivtrafik — visar var varje buss, tunnelbana, pendeltåg, spårvagn och båt befinner sig just nu.",
+      "applicationCategory": "TravelApplication",
+      "operatingSystem": "Any",
+      "browserRequirements": "Requires JavaScript",
+      "inLanguage": "sv-SE",
+      "isAccessibleForFree": true,
+      "offers": {"@type": "Offer", "price": "0", "priceCurrency": "SEK"},
+      "author": {"@type": "Person", "name": "Gunnar Johansson", "url": "https://sl-map.gunnar.se/about.html"},
+      "areaServed": {"@type": "City", "name": "Stockholm", "containedInPlace": {"@type": "Country", "name": "Sweden"}}
+    }
+  ]
+  </script>
+  <!-- Privacy-friendly analytics (Plausible) when site-config.js turns it on.
+       The queue exists before the async script, so analytics can never hold
+       back DOMContentLoaded/map init — and with analytics off, every
+       plausible('...') call in this page is a harmless no-op. -->
+  <script>
+    window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+    plausible.init();
+    (function () {
+      var p = window.SITE.analytics && window.SITE.analytics.plausible;
+      if (!p || !p.src) return;
+      var s = document.createElement('script');
+      s.async = true;
+      if (p.api) s.setAttribute('data-api', p.api);
+      if (p.domain) s.setAttribute('data-domain', p.domain);
+      s.src = p.src;
+      document.head.appendChild(s);
+    })();
+  </script>
+  <link rel="stylesheet" href="/leaflet.css" />
+  <script defer src="/leaflet.js"></script>
+  <script>
+    (function(){var t=localStorage.getItem('theme');
+    if(t!=='light')document.documentElement.classList.add('dark')})();
+  </script>
+  <style>
+    :root {
+      --bg-body: #f5f5f7;
+      --bg-glass: rgba(255, 255, 255, 0.85);
+      --bg-glass-strong: rgba(255, 255, 255, 0.92);
+      --bg-glass-hover: rgba(230, 230, 240, 0.95);
+      --text-primary: #1a1a2e;
+      --text-secondary: #333;
+      --text-dim: #555;
+      --text-muted: #666;
+      --text-faint: #999;
+      --text-separator: #ccc;
+      --border-subtle: rgba(0, 0, 0, 0.08);
+      --border-medium: rgba(0, 0, 0, 0.12);
+      --border-tooltip: rgba(0, 0, 0, 0.15);
+      --shadow-md: rgba(0, 0, 0, 0.1);
+      --shadow-lg: rgba(0, 0, 0, 0.15);
+      --chip-bg: rgba(0, 0, 0, 0.06);
+      --chip-bg-hover: rgba(0, 0, 0, 0.1);
+      --popup-bg: rgba(255, 255, 255, 0.95);
+      --popup-text: #333;
+      --popup-detail: #666;
+      --tooltip-bg: rgba(255, 255, 255, 0.92);
+      --marker-border: rgba(0, 0, 0, 0.15);
+      --marker-border-light: rgba(0, 0, 0, 0.15);
+      --marker-border-strong: #fff;
+      --station-bg: #1a1a2e;
+      --station-text: #fff;
+      --attribution-bg: rgba(255, 255, 255, 0.85);
+      --attribution-text: #666;
+      --attribution-link: #333;
+      --dropdown-hover-bg: rgba(0, 0, 0, 0.04);
+    }
+    :root.dark {
+      --bg-body: #1a1a2e;
+      --bg-glass: rgba(20, 20, 40, 0.85);
+      --bg-glass-strong: rgba(20, 20, 40, 0.92);
+      --bg-glass-hover: rgba(40, 40, 70, 0.95);
+      --text-primary: #fff;
+      --text-secondary: #e0e0e0;
+      --text-dim: #ccc;
+      --text-muted: #aaa;
+      --text-faint: #888;
+      --text-separator: #555;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-medium: rgba(255, 255, 255, 0.1);
+      --border-tooltip: rgba(255, 255, 255, 0.15);
+      --shadow-md: rgba(0, 0, 0, 0.4);
+      --shadow-lg: rgba(0, 0, 0, 0.5);
+      --chip-bg: rgba(255, 255, 255, 0.08);
+      --chip-bg-hover: rgba(255, 255, 255, 0.12);
+      --popup-bg: rgba(20, 20, 40, 0.95);
+      --popup-text: #e0e0e0;
+      --popup-detail: #aaa;
+      --tooltip-bg: rgba(20, 20, 40, 0.9);
+      --marker-border: rgba(255, 255, 255, 0.8);
+      --marker-border-light: rgba(255, 255, 255, 0.3);
+      --marker-border-strong: #fff;
+      --station-bg: #fff;
+      --station-text: #1a1a2e;
+      --attribution-bg: rgba(20, 20, 40, 0.85);
+      --attribution-text: #aaa;
+      --attribution-link: #ddd;
+      --dropdown-hover-bg: rgba(255, 255, 255, 0.06);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* GPU-accelerated smooth marker movement — duration set by JS per marker */
+    .leaflet-marker-icon.smooth-move {
+      will-change: transform;
+    }
+
+    body {
+      background: var(--bg-body);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100vw;
+      height: 100vh; /* fallback for browsers without dvh support */
+      height: 100dvh; /* tracks the real visible viewport, not the chrome-hidden max height — fixes bottom-anchored controls sitting behind Safari's toolbar */
+    }
+
+    /* ---- Toolbar ---- */
+    .toolbar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: calc(54px + env(safe-area-inset-top, 0px));
+      padding: env(safe-area-inset-top, 0px) 14px 0;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+      box-shadow: 0 2px 16px var(--shadow-md);
+    }
+
+    .toolbar-title {
+      color: var(--text-primary);
+      font-size: 1rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .toolbar-title:hover { color: var(--text-dim); }
+
+    .toolbar-sub {
+      font-weight: 400;
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      margin-left: 6px;
+    }
+
+
+    .toolbar-chips {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 8px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .toolbar-chip {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 14px;
+      background: var(--chip-bg);
+      border: 1px solid var(--border-medium);
+      color: var(--text-secondary);
+      font-size: 0.78rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.2s, background 0.2s;
+      white-space: nowrap;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .toolbar-chip:hover { background: var(--chip-bg-hover); }
+
+    .toolbar-chip.off {
+      opacity: 0.35;
+    }
+
+    .toolbar-chip .chip-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .toolbar-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .toolbar-nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.8rem;
+      padding: 4px 8px;
+      border-radius: 6px;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    .toolbar-nav a:hover {
+      color: var(--text-primary);
+      background: var(--chip-bg);
+    }
+
+    .nav-icon {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      vertical-align: -2px;
+      margin-right: 3px;
+    }
+
+    .toolbar-menu {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 1.4rem;
+      cursor: pointer;
+      padding: 8px 6px;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: color 0.2s;
+    }
+
+    .toolbar-menu:hover { color: var(--text-primary); }
+
+    /* ---- Toolbar dropdown ---- */
+    .toolbar-dropdown {
+      position: absolute;
+      top: calc(54px + env(safe-area-inset-top, 0px));
+      right: 8px;
+      z-index: 1001;
+      background: var(--bg-glass-strong);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-medium);
+      border-radius: 12px;
+      padding: 10px 0;
+      min-width: 200px;
+      box-shadow: 0 8px 32px var(--shadow-lg);
+    }
+
+    .toolbar-dropdown.hidden { display: none; }
+
+    .dropdown-chips {
+      display: none;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 6px 14px 10px;
+    }
+
+    .dropdown-divider {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 4px 0;
+    }
+
+    .dropdown-nav-grid {
+      display: flex;
+      gap: 0;
+    }
+    .dropdown-nav-grid > .dropdown-nav {
+      flex: 1;
+    }
+    .dropdown-nav-grid > .dropdown-nav + .dropdown-nav {
+      border-left: 1px solid var(--border-subtle);
+    }
+
+    .dropdown-nav a,
+    .dropdown-actions button {
+      display: block;
+      width: 100%;
+      padding: 8px 16px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.88rem;
+      background: none;
+      border: none;
+      text-align: left;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s;
+    }
+
+    .dropdown-nav a:hover,
+    .dropdown-actions button:hover {
+      background: var(--dropdown-hover-bg);
+      color: var(--text-primary);
+    }
+
+    /* Mobile/tablet: chips + nav in dropdown, hamburger visible */
+    @media (max-width: 1024px) {
+      .toolbar-sub { display: none; }
+      .toolbar-chips { display: none; }
+      .toolbar-nav { display: none; }
+      .toolbar-menu { display: block; margin-left: auto; }
+      .dropdown-chips { display: flex; }
+    }
+
+    /* ---- Footer bar ---- */
+    .status-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: calc(36px + env(safe-area-inset-bottom, 0px));
+      padding: 0 14px env(safe-area-inset-bottom, 0px);
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border-subtle);
+      box-shadow: 0 -2px 16px var(--shadow-md);
+      color: var(--text-muted);
+      font-size: 0.78rem;
+    }
+
+    .status-bar .count {
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .status-bar .separator {
+      color: var(--text-separator);
+    }
+
+    .status-bar a {
+      color: var(--text-faint);
+      text-decoration: none;
+    }
+
+    .status-bar a:hover {
+      color: var(--text-muted);
+      text-decoration: underline;
+    }
+
+
+    /* Leaflet popup overrides */
+    .leaflet-popup-content-wrapper {
+      background: var(--popup-bg) !important;
+      color: var(--popup-text) !important;
+      border-radius: 10px !important;
+      border: 1px solid var(--border-medium) !important;
+      box-shadow: 0 4px 20px var(--shadow-lg) !important;
+    }
+
+    .leaflet-popup-tip {
+      background: var(--popup-bg) !important;
+    }
+
+    .leaflet-popup-content {
+      margin: 12px 14px !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif !important;
+      font-size: 0.85rem !important;
+      line-height: 1.6 !important;
+    }
+
+    .leaflet-popup-close-button {
+      color: var(--text-faint) !important;
+    }
+
+    .popup-nodest { opacity: .65; font-weight: 400; font-style: italic; }
+    .popup-line {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .popup-detail {
+      color: var(--popup-detail);
+    }
+
+    .popup-ids {
+      margin-top: 7px;
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .popup-id-chip {
+      font-size: 0.68rem;
+      font-family: ui-monospace, 'SF Mono', monospace;
+      color: var(--text-faint);
+      background: var(--chip-bg);
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 2px 5px;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .popup-id-chip:hover {
+      border-color: var(--text-faint);
+    }
+
+    .popup-id-chip.copied {
+      color: #4caf50;
+    }
+
+    .popup-follow-btn {
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 8px 0;
+      border: none;
+      border-radius: 8px;
+      background: #818cf8;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .popup-follow-btn:active {
+      background: #6366f1;
+    }
+
+    /* Leaflet attribution — bottom-left, above status bar. Kept clear of
+       the zoom/locate/share buttons (all bottom-right) so it stays legible
+       instead of getting cropped or covered on mobile. */
+    .leaflet-control-attribution {
+      background: var(--attribution-bg) !important;
+      color: var(--attribution-text) !important;
+      font-size: 0.72rem !important;
+      padding: 2px 6px !important;
+      margin-bottom: calc(36px + env(safe-area-inset-bottom, 0px)) !important;
+      margin-left: 6px !important;
+    }
+
+    .leaflet-control-attribution a {
+      color: var(--attribution-link) !important;
+    }
+
+    /* Zoom control — fixed position, above share button */
+    .leaflet-control-zoom {
+      position: fixed !important;
+      bottom: calc(152px + env(safe-area-inset-bottom, 0px));
+      right: 12px;
+      z-index: 1001;
+      border: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .leaflet-control-zoom a {
+      width: 44px !important;
+      height: 44px !important;
+      line-height: 44px !important;
+      font-size: 1.3rem !important;
+      background: var(--bg-glass) !important;
+      color: var(--text-dim) !important;
+      border: 1px solid var(--border-subtle) !important;
+      border-radius: 10px !important;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: 0 4px 24px var(--shadow-md);
+    }
+
+    .leaflet-control-zoom a:hover {
+      background: var(--bg-glass-hover) !important;
+      color: var(--text-primary) !important;
+    }
+
+    /* Tooltip styling */
+    .vehicle-tooltip {
+      background: var(--tooltip-bg) !important;
+      color: var(--text-primary) !important;
+      border: 1px solid var(--border-tooltip) !important;
+      border-radius: 4px !important;
+      padding: 2px 6px !important;
+      font-size: 0.75rem !important;
+      font-weight: 600 !important;
+      box-shadow: 0 2px 8px var(--shadow-md) !important;
+    }
+
+    .vehicle-tooltip::before {
+      border-top-color: var(--tooltip-bg) !important;
+    }
+
+    /* ---- Vehicle dot markers ---- */
+    .veh-dot {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .veh-dot .veh-body {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 1.5px solid var(--marker-border);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .veh-dot .veh-line {
+      color: #fff;
+      font-size: 8px;
+      font-weight: 800;
+      font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+      line-height: 1;
+    }
+    .veh-dot.minimal-bus .veh-body {
+      width: 8px;
+      height: 8px;
+      border: 1px solid var(--marker-border-light);
+      box-shadow: none;
+    }
+    .veh-dot.minimal-rail .veh-body {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--marker-border-strong);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+    }
+    .veh-dot.rail .veh-body {
+      border: 2.5px solid var(--marker-border-strong);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    }
+    .veh-dot.large .veh-body {
+      width: 28px;
+      height: 28px;
+    }
+    .veh-dot.large.rail .veh-body {
+      border: 3px solid var(--marker-border-strong);
+    }
+    .veh-dot.large .veh-line {
+      font-size: 11px;
+    }
+    .veh-dot.mobile .veh-body {
+      width: 16px;
+      height: 16px;
+    }
+    .veh-dot.mobile .veh-line {
+      font-size: 7px;
+    }
+    .veh-dot.mobile.large .veh-body {
+      width: 22px;
+      height: 22px;
+    }
+    .veh-dot.mobile.large .veh-line {
+      font-size: 9px;
+    }
+
+    /* ---- Geolocation button ---- */
+    .locate-btn {
+      position: fixed;
+      bottom: calc(48px + env(safe-area-inset-bottom, 0px));
+      right: 12px;
+      z-index: 1000;
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: var(--text-dim);
+      font-size: 1.3rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 24px var(--shadow-md);
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .locate-btn:hover {
+      background: var(--bg-glass-hover);
+      color: var(--text-primary);
+    }
+
+    .locate-btn.active {
+      color: #60a5fa;
+    }
+
+    /* ---- Share button ---- */
+    .share-btn {
+      position: fixed;
+      bottom: calc(98px + env(safe-area-inset-bottom, 0px));
+      right: 12px;
+      z-index: 1000;
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: var(--text-dim);
+      font-size: 1.2rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 24px var(--shadow-md);
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .share-btn:hover {
+      background: var(--bg-glass-hover);
+      color: var(--text-primary);
+    }
+
+    .share-btn.copied {
+      color: #4ade80;
+    }
+
+
+    /* ---- Station markers ---- */
+    .station-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--station-bg);
+      font-size: 9px;
+      font-weight: 800;
+      color: var(--station-text);
+      line-height: 1;
+      border: 2px solid;
+    }
+
+    .station-tooltip {
+      background: var(--tooltip-bg) !important;
+      color: var(--popup-text) !important;
+      border: 1px solid var(--border-medium) !important;
+      border-radius: 6px !important;
+      padding: 4px 8px !important;
+      font-size: 0.78rem !important;
+      font-weight: 500 !important;
+      box-shadow: 0 2px 10px var(--shadow-md) !important;
+    }
+
+    .station-tooltip::before {
+      border-top-color: var(--tooltip-bg) !important;
+    }
+
+    /* ---- Update banner ---- */
+    .update-banner {
+      position: absolute;
+      top: calc(54px + env(safe-area-inset-top, 0px) + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1002;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      background: var(--bg-glass-strong);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(74, 222, 128, 0.3);
+      border-radius: 10px;
+      box-shadow: 0 4px 20px var(--shadow-md);
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      white-space: nowrap;
+      animation: slideDown 0.3s ease-out;
+    }
+
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+
+    .update-banner button {
+      background: rgba(74, 222, 128, 0.15);
+      border: 1px solid rgba(74, 222, 128, 0.3);
+      color: #4ade80;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.2s;
+    }
+
+    .update-banner button:hover {
+      background: rgba(74, 222, 128, 0.25);
+    }
+
+    /* ---- Stale data banner ---- */
+    .stale-banner {
+      position: absolute;
+      top: calc(54px + env(safe-area-inset-top, 0px) + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1002;
+      padding: 8px 16px;
+      background: var(--bg-glass-strong);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(251, 191, 36, 0.4);
+      border-radius: 10px;
+      box-shadow: 0 4px 20px var(--shadow-md);
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      text-align: center;
+      max-width: 90vw;
+      animation: slideDown 0.3s ease-out;
+    }
+
+    /* ---- PWA standalone: compact status bar, text near Home Indicator ---- */
+    @media (display-mode: standalone) {
+      .status-bar {
+        height: env(safe-area-inset-bottom, 0px);
+        padding: 0 14px;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.72rem;
+      }
+      .locate-btn {
+        bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      }
+      .share-btn {
+        bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+      }
+      .leaflet-control-zoom {
+        bottom: calc(112px + env(safe-area-inset-bottom, 0px)) !important;
+      }
+    }
+
+    /* ---- Native app overrides ---- */
+    body.native-app .toolbar {
+      padding-top: 0;
+      height: 48px;
+    }
+
+    body.native-app .status-bar {
+      height: 28px;
+      padding: 0 14px;
+      font-size: 0.72rem;
+      justify-content: center;
+    }
+
+    body.native-app .locate-btn {
+      bottom: 40px;
+    }
+
+    body.native-app .share-btn {
+      bottom: 90px;
+    }
+
+    body.native-app .leaflet-control-zoom {
+      bottom: 140px !important;
+    }
+
+    /* ---- Theme transition ---- */
+    body, .toolbar, .status-bar,
+    .leaflet-popup-content-wrapper,
+    .leaflet-control-zoom a,
+    .locate-btn, .share-btn,
+    .toolbar-dropdown, .toolbar-chip {
+      transition: background-color 0.3s, color 0.3s, border-color 0.3s;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body, .toolbar, .status-bar,
+      .leaflet-popup-content-wrapper,
+      .leaflet-control-zoom a,
+      .locate-btn, .share-btn,
+      .toolbar-dropdown, .toolbar-chip {
+        transition: none;
+      }
+    }
+
+    /* ---- Theme toggle button ---- */
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 6px;
+      transition: color 0.2s, background 0.2s;
+    }
+    .theme-toggle:hover {
+      color: var(--text-primary);
+      background: var(--chip-bg);
+    }
+    .theme-toggle svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* ---- Screensaver mode ---- */
+    body.screensaver .toolbar,
+    body.screensaver .toolbar-dropdown,
+    body.screensaver .share-btn,
+    body.screensaver .locate-btn,
+    body.screensaver .leaflet-control-zoom { display: none !important; }
+    body.screensaver .leaflet-control-attribution { opacity: 0.4; font-size: 9px; }
+    body.screensaver .status-bar {
+      right: auto;
+      border: none;
+      border-radius: 0 8px 0 0;
+      height: auto;
+      padding: 4px 12px;
+      font-size: 0.72rem;
+      opacity: 0.7;
+      box-shadow: none;
+    }
+    body.screensaver .status-bar .separator:last-of-type,
+    body.screensaver .status-bar a { display: none; }
+    body.screensaver { cursor: none; }
+    body.screensaver #map { box-shadow: inset 0 0 120px 40px rgba(0,0,0,0.5); }
+
+  </style>
+</head>
+<body>
+<main>
+<div id="map"></div>
+
+<nav class="toolbar" id="toolbar">
+  <a href="/" class="toolbar-title">SL Live Map <span class="toolbar-sub">Realtidspositioner i Stockholm</span></a>
+  <div class="toolbar-chips" id="toolbar-chips">
+    <span class="toolbar-chip" data-layer="metro"><span class="chip-dot" style="background:#00a651"></span>T-bana</span>
+    <span class="toolbar-chip" data-layer="train"><span class="chip-dot" style="background:#8e44ad"></span>Pendeltåg</span>
+    <span class="toolbar-chip" data-layer="tram"><span class="chip-dot" style="background:#1a5276"></span>Spårvagn</span>
+    <span class="toolbar-chip" data-layer="ship"><span class="chip-dot" style="background:#00b4d8"></span>Båtar</span>
+    <span class="toolbar-chip" data-layer="bus"><span class="chip-dot" style="background:#e3000b"></span>Bussar</span>
+  </div>
+  <div class="toolbar-nav">
+    <a href="about.html" data-page="about"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 16v-4m0-4h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Om</a>
+    <a href="/nyheter" data-page="news"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><path d="M19 5H5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2z" stroke="currentColor" stroke-width="2"/><path d="M7 9h4m-4 3h10m-10 3h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Nyheter</a>
+    <a href="/contact.html" data-page="contact"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="currentColor" stroke-width="2"/><path d="M22 6l-10 7L2 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Kontakt</a>
+    <a href="/screensaver.html" data-page="screensaver"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 21h8m-4-4v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Skärmsläckare</a>
+    <button class="theme-toggle" id="theme-toggle-desktop" aria-label="Byt tema"></button>
+  </div>
+  <button class="toolbar-menu" id="toolbar-menu" aria-label="Meny">&#9776;</button>
+</nav>
+<div class="toolbar-dropdown hidden" id="toolbar-dropdown">
+  <div class="dropdown-chips">
+    <span class="toolbar-chip" data-layer="metro"><span class="chip-dot" style="background:#00a651"></span>T-bana</span>
+    <span class="toolbar-chip" data-layer="train"><span class="chip-dot" style="background:#8e44ad"></span>Pendeltåg</span>
+    <span class="toolbar-chip" data-layer="tram"><span class="chip-dot" style="background:#1a5276"></span>Spårvagn</span>
+    <span class="toolbar-chip" data-layer="ship"><span class="chip-dot" style="background:#00b4d8"></span>Båtar</span>
+    <span class="toolbar-chip" data-layer="bus"><span class="chip-dot" style="background:#e3000b"></span>Bussar</span>
+  </div>
+  <div class="dropdown-divider"></div>
+  <div class="dropdown-nav-grid">
+    <div class="dropdown-nav">
+      <a href="about.html" data-page="about"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 16v-4m0-4h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Om</a>
+      <a href="/nyheter" data-page="news"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><path d="M19 5H5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2z" stroke="currentColor" stroke-width="2"/><path d="M7 9h4m-4 3h10m-10 3h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Nyheter</a>
+
+      <a href="/contact.html" data-page="contact"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="currentColor" stroke-width="2"/><path d="M22 6l-10 7L2 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Kontakt</a>
+    </div>
+    <div class="dropdown-nav">
+      <a href="#" id="dropdown-share"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><path d="M4 12v7a2 2 0 002 2h12a2 2 0 002-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="16 6 12 2 8 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="2" x2="12" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Dela</a>
+      <a href="/install.html" data-page="install"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><path d="M12 15V3m0 12l-4-4m4 4l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 17l.621 2.485A2 2 0 004.561 21h14.878a2 2 0 001.94-1.515L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Installera</a>
+      <a href="/screensaver.html" data-page="screensaver"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 21h8m-4-4v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Skärmsläckare</a>
+    </div>
+  </div>
+  <div class="dropdown-divider"></div>
+  <div class="dropdown-actions">
+    <button id="theme-toggle-mobile" type="button"></button>
+  </div>
+</div>
+
+<button class="share-btn" id="share-btn" title="Dela kartvy">&#8599;</button>
+<button class="locate-btn" id="locate-btn" title="Visa min position">&#9678;</button>
+
+<div class="status-bar" id="status-bar">
+  <span><span class="count" id="vehicle-count">0</span> fordon visas<span id="visitor-count"></span> <span class="separator">&middot;</span> <span id="last-update">Laddar...</span><span data-page="credit"> <span class="separator">&middot;</span> <a href="https://gunnar.se" target="_blank" rel="noopener">gunnar.se</a></span></span>
+</div>
+</main>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  'use strict';
+
+  // =========================================================================
+  // Utility
+  // =========================================================================
+
+  function escapeHtml(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // =========================================================================
+  // URL parameters
+  // =========================================================================
+
+  const params = new URLSearchParams(window.location.search);
+  const isScreensaver = params.has('screensaver');
+  const startLat = parseFloat(params.get('lat')) || 59.33;
+  const startLon = parseFloat(params.get('lon')) || 18.07;
+  const startZoom = parseInt(params.get('zoom')) || 13;
+  let debugMode = params.has('debug');
+
+  if (isScreensaver) {
+    document.body.classList.add('screensaver');
+    plausible('Screensaver Active');
+
+
+    // --- Screensaver rAF watchdog v4 ---
+    // When rAF is throttled to >150ms avg over 300 frames, screensaver is
+    // backgrounded (leaked WKWebView) — stop polling. Resume when rAF returns
+    // to <50ms avg. 3-tick hysteresis (~6 min) prevents jitter oscillation.
+    // v3 (30/50ms, per-rAF) burned us — top IP did 87 transitions in 10 min.
+    // ?fasttest=1 → hysteresis=1, interval=5s, window=60 frames (~1s @ 60fps)
+    // Used by Puppeteer/manual local end-to-end tests. No-op in real use.
+    const _diagFast = params.has('fasttest');
+    // Telemetry is opt-in. Every screensaver instance posted a heartbeat every
+    // 120s, which came to ~79k requests/day — 64% of everything reaching
+    // Gunicorn — for an investigation nobody reads day to day. Only the
+    // reporting call is gated: the rAF state machine, the 4h cutoff and the
+    // visibilitychange polling control all still run exactly as before.
+    // ?ssdiag=1 turns collection back on when the leak work resumes.
+    const _diagReporting = _diagFast || params.has('ssdiag');
+    const _diagId = crypto.randomUUID();
+    let _diagState = 'unknown';        // committed: 'unknown' | 'active' | 'throttled'
+    let _diagLastFrame = 0;
+    let _diagFrameTimes = [];          // rolling window of frame deltas
+    const _DIAG_WINDOW = _diagFast ? 60 : 300;     // ~1s vs ~5s @ 60fps
+    const _ACTIVE_THRESHOLD = 50;      // ms
+    const _THROTTLED_THRESHOLD = 150;  // ms
+    const _HYSTERESIS = _diagFast ? 1 : 3;
+    let _diagCandidate = null;
+    let _diagCandidateCount = 0;
+
+    function _diagReport(ev) {
+      if (!_diagReporting) return;
+      const avg = _diagFrameTimes.length
+        ? _diagFrameTimes.reduce((a, b) => a + b, 0) / _diagFrameTimes.length : 0;
+      const min = _diagFrameTimes.length ? Math.min(..._diagFrameTimes) : 0;
+      const max = _diagFrameTimes.length ? Math.max(..._diagFrameTimes) : 0;
+      fetch('/api/screensaver-diag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: _diagId, transition: ev, state: _diagState,
+          rafAvg: avg, rafMin: min, rafMax: max,
+          samples: _diagFrameTimes.length,
+          docHidden: document.hidden,
+          visState: document.visibilityState,
+          candidate: _diagCandidate,
+          candidateCount: _diagCandidateCount
+        })
+      }).catch(() => {});
+    }
+
+    function _diagFrameTick(ts) {
+      if (_diagLastFrame) {
+        const dt = ts - _diagLastFrame;
+        _diagFrameTimes.push(dt);
+        if (_diagFrameTimes.length > _DIAG_WINDOW) _diagFrameTimes.shift();
+      }
+      _diagLastFrame = ts;
+      requestAnimationFrame(_diagFrameTick);
+    }
+    requestAnimationFrame(_diagFrameTick);
+
+    function _classifyAvg(avg) {
+      if (avg < _ACTIVE_THRESHOLD) return 'active';
+      if (avg > _THROTTLED_THRESHOLD) return 'throttled';
+      return null; // fuzzy
+    }
+
+    function _diagEvaluate() {
+      if (_diagFrameTimes.length < _DIAG_WINDOW) {
+        _diagReport('heartbeat');
+        return;
+      }
+      const avg = _diagFrameTimes.reduce((a, b) => a + b, 0) / _diagFrameTimes.length;
+      const candidate = _classifyAvg(avg);
+
+      if (candidate === null || candidate === _diagState) {
+        _diagCandidate = null;
+        _diagCandidateCount = 0;
+      } else if (candidate === _diagCandidate) {
+        _diagCandidateCount++;
+        if (_diagCandidateCount >= _HYSTERESIS) {
+          _diagState = candidate;
+          _diagCandidate = null;
+          _diagCandidateCount = 0;
+          _diagReport('became_' + candidate);
+          // Note: previously called stop/startPolling here. Removed because:
+          // (1) rAF doesn't actually throttle in WKWebView (occlusion detection
+          //     is intentionally disabled — required for the map to render),
+          // (2) Path A's 4h cutoff is the actual leak fix, and v4 'became_active'
+          //     would race with it and re-start polling after cutoff. v4 stays
+          //     as observability only.
+          return;
+        }
+      } else {
+        _diagCandidate = candidate;
+        _diagCandidateCount = 1;
+      }
+      _diagReport('heartbeat');
+    }
+
+    setInterval(_diagEvaluate, _diagFast ? 5000 : 120000);
+
+    // Path B: standard Page Visibility API. Once Swift stops overriding
+    // document.hidden, this becomes the primary leak fix — visibilitychange
+    // fires when the screensaver window is occluded/un-occluded by macOS.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        _diagReport('vischange_hidden');
+        stopPolling();
+      } else {
+        _diagReport('vischange_visible');
+        startPolling();
+      }
+    });
+
+    // Path A: hard 4h cutoff as guaranteed upper bound. Real screensaver
+    // sessions are rarely > 4h; anything longer is almost certainly leaked.
+    // ?fasttest=1 → 3s for headless verification.
+    const _ssCutoffMs = _diagFast ? 3000 : 4 * 60 * 60 * 1000;
+    _diagReport('cutoff_scheduled');
+    setTimeout(() => {
+      _diagReport('cutoff_firing');
+      try {
+        stopPolling();
+        _diagReport('cutoff_stopped_ok');
+      } catch (e) {
+        _diagReport('cutoff_error');
+      }
+    }, _ssCutoffMs);
+
+    // Native bridge (kept as belt-and-suspenders): Swift's NSWindow occlusion
+    // observer calls this. Currently unreliable on macOS Tahoe; visibilitychange
+    // is the primary signal once Swift override is removed.
+    window._onOccluded = function(occluded) {
+      try {
+        _diagReport(occluded ? 'occluded' : 'unoccluded');
+        if (occluded) stopPolling();
+        else startPolling();
+      } catch (e) { /* startPolling/stopPolling defined later — safe via closure */ }
+    };
+
+    // Test hook for headless verification (Puppeteer). No-op in real use.
+    window.__ssDiagTest = {
+      inject(opts) {
+        if ('frameTimes' in opts) _diagFrameTimes = opts.frameTimes;
+        if ('candidate'  in opts) _diagCandidate = opts.candidate;
+        if ('candidateCount' in opts) _diagCandidateCount = opts.candidateCount;
+        if ('state'      in opts) _diagState = opts.state;
+      },
+      getState: () => _diagState,
+      getCandidateCount: () => _diagCandidateCount,
+      evaluate: _diagEvaluate,
+      isPolling: () => typeof _vehicleInterval !== 'undefined' && _vehicleInterval !== null,
+    };
+  }
+
+  // =========================================================================
+  // Map setup
+  // =========================================================================
+
+  const map = L.map('map', {
+    center: [startLat, startLon],
+    zoom: startZoom,
+    zoomControl: false,
+    attributionControl: false,
+  });
+
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  // Bottom-left: the only corner with no buttons on top of it, so the
+  // required basemap credit stays fully legible on mobile instead of
+  // fighting the zoom/locate/share button stack in the bottom-right.
+  L.control.attribution({ position: 'bottomleft', prefix: false }).addTo(map);
+
+  // Double-right-click to zoom out (matches Flightradar24 behavior)
+  let _lastRightClick = 0;
+  map.on('contextmenu', function(e) {
+    const now = Date.now();
+    if (now - _lastRightClick < 500) {
+      map.zoomOut(1, { animate: true });
+      _lastRightClick = 0;
+    } else {
+      _lastRightClick = now;
+    }
+  });
+
+  if (isScreensaver) {
+    map.dragging.disable();
+    map.scrollWheelZoom.disable();
+    map.doubleClickZoom.disable();
+    map.touchZoom.disable();
+    map.boxZoom.disable();
+    map.keyboard.disable();
+  }
+
+  // Version check: poll server start time, notify on change
+  let knownVersion = null;
+  function checkVersion() {
+    fetch('/api/version').then(r => r.json()).then(({ v }) => {
+      if (!knownVersion) { knownVersion = v; return; }
+      if (v !== knownVersion) {
+        knownVersion = v;
+        if (isScreensaver) { location.reload(); return; }
+        if (document.querySelector('.update-banner')) return;
+        const banner = document.createElement('div');
+        banner.className = 'update-banner';
+        banner.innerHTML = 'Ny version tillgänglig <button onclick="location.reload()">Ladda om</button>';
+        document.body.appendChild(banner);
+      }
+    }).catch(() => {});
+  }
+
+  // =========================================================================
+  // Theme (light/dark)
+  // =========================================================================
+
+  // Basemap tiles come from site-config.js (window.SITE.tiles): per theme a
+  // Leaflet tile URL plus tileLayer options. A config with only `light` uses it
+  // for both themes. If the file is missing altogether, fall back to
+  // OpenStreetMap's own tiles so the map still has a basemap.
+  const SITE_TILES = (window.SITE && window.SITE.tiles) || {};
+  const FALLBACK_TILES = {
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  };
+  if (!SITE_TILES.light && !SITE_TILES.dark) {
+    console.error('site-config.js: no basemap tiles configured — using OpenStreetMap');
+  }
+  function makeTileLayer(dark) {
+    const cfg = (dark ? SITE_TILES.dark : SITE_TILES.light) || SITE_TILES.light || SITE_TILES.dark || FALLBACK_TILES;
+    const opts = Object.assign({}, cfg);
+    delete opts.url;
+    return L.tileLayer(cfg.url, opts);
+  }
+
+  const SUN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
+  const MOON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>';
+
+  let isDark = document.documentElement.classList.contains('dark');
+  if (isScreensaver && !isDark) {
+    isDark = true;
+    document.documentElement.classList.add('dark');
+  }
+  let tileLayer = makeTileLayer(isDark).addTo(map);
+
+  function updateThemeButtons() {
+    const icon = isDark ? SUN_SVG : MOON_SVG;
+    const label = isDark ? 'Ljust läge' : 'Mörkt läge';
+    const desktopBtn = document.getElementById('theme-toggle-desktop');
+    const mobileBtn = document.getElementById('theme-toggle-mobile');
+    if (desktopBtn) { desktopBtn.innerHTML = icon; desktopBtn.title = label; }
+    if (mobileBtn) {
+      mobileBtn.innerHTML = '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+        (isDark ? '<circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'
+                : '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>') +
+        '</svg>' + label;
+    }
+  }
+
+  function setTheme(dark) {
+    isDark = dark;
+    if (dark) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
+    }
+    map.removeLayer(tileLayer);
+    tileLayer = makeTileLayer(dark).addTo(map);
+    tileLayer.setZIndex(0);
+    updateThemeButtons();
+    plausible('Theme Toggle', { props: { theme: dark ? 'dark' : 'light' } });
+  }
+
+  updateThemeButtons();
+
+  document.getElementById('theme-toggle-desktop').addEventListener('click', () => setTheme(!isDark));
+  document.getElementById('theme-toggle-mobile').addEventListener('click', () => {
+    setTheme(!isDark);
+    document.getElementById('toolbar-dropdown').classList.add('hidden');
+  });
+
+  // =========================================================================
+  // State
+  // =========================================================================
+
+  let vehicleMarkers = {};      // vehicle id → L.circleMarker
+  let metroRouteLayers = { green: [], red: [], blue: [] };
+  let tramRouteLayers = [];
+  let trainRouteLayers = [];
+  // designation → [ shape0Coords, shape1Coords, ... ], each shapeNCoords a
+  // [[lat,lon], ...] polyline. GTFS gives one feature PER DIRECTION for a
+  // line ref; kept as SEPARATE polylines (not concatenated into one flat
+  // array) because a naive concat forms a bogus segment between the last
+  // point of one shape and the first point of the next — measured up to
+  // 76 km long on the real data (pendeltåg line 40/41). snapToTrack()
+  // below has no distance cap on its nearest-match, so that phantom
+  // segment could hijack real snaps across most of a route. Keeping
+  // shapes separate means segments only ever connect two points that are
+  // actually adjacent on the same physical run.
+  const trackGeometry = {};
+
+  // Previously `trackGeometry[ref] = coords` in onEachFeature let the
+  // second direction's feature silently overwrite the first, discarding
+  // half the real track. Confirmed 2026-08-25: every line in
+  // metro/train/tram geojson has two same-ref features with MISMATCHED
+  // bounding boxes (not just reversed point order) — e.g. red line 14's
+  // surviving shape was missing the entire southwestern stretch toward
+  // Fruängen. Vehicles running the discarded direction/branch then snap
+  // to whatever's nearest on the WRONG shape (sometimes km away), and
+  // the resulting track-local bearing can be ~180° off the vehicle's true
+  // heading, which trips the reversal-rejection guard in updateVehicles()
+  // and silently drops legitimate position updates. Net effect: visibly
+  // jerky/erratic marker movement — reported on the red line, but the bug
+  // is universal across all lines. Fix: keep every shape for a ref
+  // (pushed, not merged) so snapToTrack always has the full path.
+  function addTrackGeometry(ref, coords) {
+    if (!ref) return;
+    (trackGeometry[ref] = trackGeometry[ref] || []).push(coords);
+  }
+
+  const layerState = {
+    'metro': true,
+    'tram': true,
+    'train': true,
+    'ship': true,
+    'bus': true,
+  };
+
+  // Apply layers from URL parameter
+  if (params.has('layers')) {
+    const activeLayers = params.get('layers').split(',');
+    for (const key of Object.keys(layerState)) {
+      layerState[key] = activeLayers.includes(key);
+    }
+  }
+
+  // Sync chip visual state with layerState
+  function syncChips() {
+    document.querySelectorAll('.toolbar-chip[data-layer]').forEach(chip => {
+      chip.classList.toggle('off', !layerState[chip.dataset.layer]);
+    });
+  }
+  syncChips();
+
+  const METRO_COLORS = {
+    green: '#148541',
+    red: '#d71d24',
+    blue: '#007db8',
+  };
+
+  const METRO_LINE_GROUPS = {
+    '17': 'green', '18': 'green', '19': 'green',
+    '13': 'red', '14': 'red',
+    '10': 'blue', '11': 'blue',
+  };
+
+  const TRAM_COLOR = '#1a5276';   // dark blue
+  const TRAIN_COLOR = '#8e44ad';  // purple
+  const SHIP_COLOR = '#00b4d8';   // cyan
+  const BUS_COLOR = '#e3000b';    // SL bus red
+  const BLUE_BUS_COLOR = '#0078b8'; // SL blue bus
+  const BUS_MINIMAL_COLOR = '#f59e0b'; // amber for all buses when zoomed out
+  const BLUE_BUS_LINES = new Set([
+    '1','2','3','4','5','6',
+    '172','173','175','176','177','178','179',
+    '471','474','670','676','677','873','875',
+  ]);
+
+  const TRAM_NAMES = {
+    '7': 'Spårväg City',
+    '12': 'Nockebybanan',
+    '21': 'Lidingöbanan',
+    '25': 'Saltsjöbanan',
+    '26': 'Saltsjöbanan',
+    '27': 'Roslagsbanan',
+    '28': 'Roslagsbanan',
+    '29': 'Roslagsbanan',
+    '30': 'Tvärbanan',
+    '31': 'Tvärbanan',
+  };
+
+  const mobileQuery = window.matchMedia('(max-width: 768px)');
+  let isMobile = mobileQuery.matches;
+
+  const BUS_MIN_ZOOM_DESKTOP = 0;
+  const BUS_MIN_ZOOM_MOBILE = 0;
+  const STATION_MIN_ZOOM = 12;  // show station markers from this zoom level
+
+  // =========================================================================
+  // Vehicle category from server-provided fields
+  // =========================================================================
+
+  function getVehicleCategory(v) {
+    const desig = v.line || '?';
+
+    if (v.transport_mode === 'METRO' && v.metro_group) {
+      return { type: 'metro', group: v.metro_group, color: METRO_COLORS[v.metro_group] || METRO_COLORS.green, designation: desig };
+    }
+
+    // Also check local METRO_LINE_GROUPS as fallback
+    // (but not if transport_mode is SHIP — Waxholmsbolaget shares line numbers with metro)
+    const metroGroup = METRO_LINE_GROUPS[desig];
+    if (metroGroup && v.transport_mode !== 'SHIP') {
+      return { type: 'metro', group: metroGroup, color: METRO_COLORS[metroGroup], designation: desig };
+    }
+
+    if (v.transport_mode === 'TRAM') {
+      return { type: 'tram', group: null, color: TRAM_COLOR, designation: desig };
+    }
+
+    if (v.transport_mode === 'TRAIN') {
+      return { type: 'train', group: null, color: TRAIN_COLOR, designation: desig };
+    }
+
+    if (v.transport_mode === 'SHIP') {
+      return { type: 'ship', group: null, color: SHIP_COLOR, designation: desig };
+    }
+
+    const busColor = BLUE_BUS_LINES.has(desig) ? BLUE_BUS_COLOR : BUS_COLOR;
+    return { type: 'bus', group: null, color: busColor, designation: desig };
+  }
+
+  // =========================================================================
+  // Metro GeoJSON routes
+  // =========================================================================
+
+
+  async function loadMetroRoutes() {
+    try {
+      const resp = await fetch('/api/metro-lines');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const geojson = await resp.json();
+
+      L.geoJSON(geojson, {
+        style: function(feature) {
+          return {
+            color: feature.properties.color || '#888',
+            weight: 4,
+            opacity: 0.8,
+          };
+        },
+        onEachFeature: function(feature, layer) {
+          const group = feature.properties.group; // "green", "red", "blue"
+          if (group && metroRouteLayers[group]) {
+            metroRouteLayers[group].push(layer);
+          }
+          const ref = feature.properties.ref;
+          if (ref) {
+            addTrackGeometry(ref, feature.geometry.coordinates.map(c => [c[1], c[0]]));
+          }
+          if (layerState.metro) layer.addTo(map);
+        },
+      });
+
+    } catch (err) {
+      console.warn('Failed to load metro routes:', err);
+    }
+  }
+
+  // =========================================================================
+  // Tram/light rail GeoJSON routes
+  // =========================================================================
+
+  async function loadTramRoutes() {
+    try {
+      const resp = await fetch('/api/tram-lines');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const geojson = await resp.json();
+
+      L.geoJSON(geojson, {
+        style: function(feature) {
+          return {
+            color: feature.properties.color || TRAM_COLOR,
+            weight: 3,
+            opacity: 0.6,
+            dashArray: '6 4',
+          };
+        },
+        onEachFeature: function(feature, layer) {
+          const name = feature.properties.name || '';
+          const ref = feature.properties.ref || '';
+          if (name) {
+            layer.bindTooltip(`${escapeHtml(name)} ${escapeHtml(ref)}`, { sticky: true, className: 'vehicle-tooltip' });
+          }
+          if (ref) {
+            addTrackGeometry(ref, feature.geometry.coordinates.map(c => [c[1], c[0]]));
+          }
+          tramRouteLayers.push(layer);
+          if (layerState.tram) layer.addTo(map);
+        },
+      });
+
+    } catch (err) {
+      console.warn('Failed to load tram routes:', err);
+    }
+  }
+
+  // =========================================================================
+  // Pendeltåg GeoJSON routes
+  // =========================================================================
+
+  async function loadTrainRoutes() {
+    try {
+      const resp = await fetch('/api/train-lines');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const geojson = await resp.json();
+
+      L.geoJSON(geojson, {
+        style: function(feature) {
+          return {
+            color: feature.properties.color || TRAIN_COLOR,
+            weight: 3,
+            opacity: 0.6,
+            dashArray: '8 5',
+          };
+        },
+        onEachFeature: function(feature, layer) {
+          const name = feature.properties.name || '';
+          const ref = feature.properties.ref || '';
+          layer.bindTooltip('Pendeltåg', { sticky: true, className: 'vehicle-tooltip' });
+          if (ref) {
+            addTrackGeometry(ref, feature.geometry.coordinates.map(c => [c[1], c[0]]));
+          }
+          trainRouteLayers.push(layer);
+          if (layerState.train) layer.addTo(map);
+        },
+      });
+
+    } catch (err) {
+      console.warn('Failed to load train routes:', err);
+    }
+  }
+
+  // =========================================================================
+  // Stations (loaded async from stations.json)
+  // =========================================================================
+
+  // =========================================================================
+  // Stations (loaded async from stations.json)
+  // =========================================================================
+
+
+  let stationMarkers = [];
+  let tramStationMarkers = [];
+  let trainStationMarkers = [];
+
+  function createStationMarkers(stationList, color, label) {
+    const markers = [];
+    for (const s of stationList) {
+      const icon = L.divIcon({
+        className: '',
+        html: '<div class="station-icon" style="border-color:' + color + '">' + label + '</div>',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8],
+      });
+      const marker = L.marker([s.lat, s.lon], { icon: icon });
+      marker.bindTooltip(escapeHtml(s.name), {
+        permanent: false,
+        direction: 'top',
+        offset: [0, -10],
+        className: 'station-tooltip',
+      });
+      markers.push(marker);
+    }
+    return markers;
+  }
+
+  const _scheduleIdle = window.requestIdleCallback || (cb => setTimeout(cb, 0));
+
+  function _createStationMarkersBatched(items, targetArray, batchSize, onDone) {
+    let i = 0;
+    function processBatch() {
+      const end = Math.min(i + batchSize, items.length);
+      for (; i < end; i++) {
+        const item = items[i];
+        const icon = L.divIcon({
+          className: '',
+          html: '<div class="station-icon" style="border-color:' + item.color + '">' + item.label + '</div>',
+          iconSize: [16, 16],
+          iconAnchor: [8, 8],
+        });
+        const marker = L.marker([item.lat, item.lon], { icon: icon });
+        marker.bindTooltip(escapeHtml(item.name), {
+          permanent: false,
+          direction: 'top',
+          offset: [0, -10],
+          className: 'station-tooltip',
+        });
+        targetArray.push(marker);
+      }
+      if (i < items.length) {
+        _scheduleIdle(processBatch);
+      } else if (onDone) {
+        onDone();
+      }
+    }
+    if (items.length > 0) _scheduleIdle(processBatch);
+    else if (onDone) onDone();
+  }
+
+  async function loadStations() {
+    try {
+      const resp = await fetch('/stations.json');
+      if (!resp.ok) return;
+      const data = await resp.json();
+
+      // Prepare flat item lists with color/label baked in
+      const metroItems = (data.metro || []).map(s => ({
+        lat: s.lat, lon: s.lon, name: s.name,
+        color: METRO_COLORS[s.group] || '#888', label: 'T'
+      }));
+      const tramItems = (data.tram || []).map(s => ({
+        lat: s.lat, lon: s.lon, name: s.name,
+        color: TRAM_COLOR, label: 'S'
+      }));
+      const trainItems = (data.train || []).map(s => ({
+        lat: s.lat, lon: s.lon, name: s.name,
+        color: TRAIN_COLOR, label: 'J'
+      }));
+
+      let done = 0;
+      const checkDone = () => { if (++done === 3) applyStationVisibility(); };
+
+      _createStationMarkersBatched(metroItems, stationMarkers, 30, checkDone);
+      _createStationMarkersBatched(tramItems, tramStationMarkers, 30, checkDone);
+      _createStationMarkersBatched(trainItems, trainStationMarkers, 30, checkDone);
+    } catch (err) {
+      console.warn('Failed to load stations:', err);
+    }
+  }
+
+  function applyStationVisibility() {
+    const zoom = map.getZoom();
+    const showStations = zoom >= STATION_MIN_ZOOM;
+
+    const showMetro = showStations && layerState.metro;
+    for (const m of stationMarkers) {
+      if (showMetro) {
+        if (!map.hasLayer(m)) m.addTo(map);
+      } else {
+        if (map.hasLayer(m)) map.removeLayer(m);
+      }
+    }
+
+    const showTram = showStations && layerState.tram;
+    for (const m of tramStationMarkers) {
+      if (showTram) {
+        if (!map.hasLayer(m)) m.addTo(map);
+      } else {
+        if (map.hasLayer(m)) map.removeLayer(m);
+      }
+    }
+
+    const showTrain = showStations && layerState.train;
+    for (const m of trainStationMarkers) {
+      if (showTrain) {
+        if (!map.hasLayer(m)) m.addTo(map);
+      } else {
+        if (map.hasLayer(m)) map.removeLayer(m);
+      }
+    }
+  }
+
+  // =========================================================================
+  // Geolocation
+  // =========================================================================
+
+  let userLocationMarker = null;
+  let userAccuracyCircle = null;
+
+  document.getElementById('locate-btn').addEventListener('click', function() {
+    if (!navigator.geolocation) {
+      alert('Din webbläsare stöder inte platsdelning.');
+      return;
+    }
+    const btn = this;
+    btn.style.color = '#60a5fa';
+    plausible('Geolocation');
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const accuracy = pos.coords.accuracy;
+
+        if (userLocationMarker) {
+          userLocationMarker.setLatLng([lat, lng]);
+          userAccuracyCircle.setLatLng([lat, lng]);
+          userAccuracyCircle.setRadius(accuracy);
+        } else {
+          userAccuracyCircle = L.circle([lat, lng], {
+            radius: accuracy,
+            fillColor: '#60a5fa',
+            fillOpacity: 0.1,
+            color: '#60a5fa',
+            weight: 1,
+            opacity: 0.3,
+          }).addTo(map);
+
+          userLocationMarker = L.circleMarker([lat, lng], {
+            radius: 7,
+            fillColor: '#60a5fa',
+            fillOpacity: 1,
+            color: '#fff',
+            weight: 2,
+          }).addTo(map);
+
+          userLocationMarker.bindTooltip('Du är här', {
+            permanent: false,
+            direction: 'top',
+            offset: [0, -10],
+            className: 'vehicle-tooltip',
+          });
+        }
+
+        map.setView([lat, lng], 15);
+        btn.classList.add('active');
+      },
+      function(err) {
+        btn.style.color = '';
+        if (err.code === 1) {
+          alert('Platsdelning nekades. Tillåt platsåtkomst i webbläsaren.');
+        } else {
+          alert('Kunde inte hämta din position: ' + err.message);
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+
+  // =========================================================================
+  // Toolbar: chips, hamburger, dropdown
+  // =========================================================================
+
+  const toolbarDropdown = document.getElementById('toolbar-dropdown');
+
+  // Chip click → toggle layer
+  document.querySelectorAll('.toolbar-chip[data-layer]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const layer = chip.dataset.layer;
+      layerState[layer] = !layerState[layer];
+      syncChips();
+      applyLayerVisibility();
+      applyStationVisibility();
+      plausible('Layer Toggle', { props: { layer: layer, state: layerState[layer] ? 'on' : 'off' } });
+    });
+  });
+
+  // Hamburger toggle
+  document.getElementById('toolbar-menu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasHidden = toolbarDropdown.classList.contains('hidden');
+    toolbarDropdown.classList.toggle('hidden');
+    if (wasHidden) plausible('Menu Open');
+  });
+
+  // Click outside closes dropdown
+  document.addEventListener('click', (e) => {
+    if (!toolbarDropdown.classList.contains('hidden') &&
+        !toolbarDropdown.contains(e.target) &&
+        e.target.id !== 'toolbar-menu') {
+      toolbarDropdown.classList.add('hidden');
+    }
+  });
+
+  // =========================================================================
+  // Debug mode toggle (d key)
+  // =========================================================================
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'd') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+    debugMode = !debugMode;
+    console.log('[debug]', debugMode ? 'på' : 'av');
+  });
+
+  // =========================================================================
+  // Share (button + dropdown action)
+  // =========================================================================
+
+  function doShare(feedbackEl) {
+    const center = map.getCenter();
+    const zoom = map.getZoom();
+    const activeLayers = Object.keys(layerState).filter(k => layerState[k]);
+
+    const url = new URL(window.location.pathname, window.location.origin);
+    url.searchParams.set('lat', center.lat.toFixed(4));
+    url.searchParams.set('lon', center.lng.toFixed(4));
+    url.searchParams.set('zoom', zoom);
+    if (activeLayers.length < Object.keys(layerState).length) {
+      url.searchParams.set('layers', activeLayers.join(','));
+    }
+
+    const shareUrl = url.toString();
+    plausible('Share', { props: { zoom: String(zoom) } });
+    toolbarDropdown.classList.add('hidden');
+
+    if (navigator.share) {
+      navigator.share({ title: 'SL Live Map', text: 'Realtidskarta \u00f6ver SL-fordon i Stockholm', url: shareUrl }).catch(function() {});
+    } else {
+      navigator.clipboard.writeText(shareUrl).then(function() {
+        if (feedbackEl) {
+          feedbackEl.classList.add('copied');
+          feedbackEl.textContent = '\u2713';
+          setTimeout(function() {
+            feedbackEl.classList.remove('copied');
+            feedbackEl.innerHTML = '&#8599;';
+          }, 1500);
+        }
+      });
+    }
+  }
+
+  document.getElementById('share-btn').addEventListener('click', function() {
+    doShare(this);
+  });
+
+  document.getElementById('dropdown-share').addEventListener('click', function(e) {
+    e.preventDefault();
+    doShare(null);
+  });
+
+
+  // =========================================================================
+  // Vehicle markers
+  // =========================================================================
+
+  const POLL_INTERVAL = 2000; // ms — matches Trafiklab's ~2s update interval
+  const MAX_SPEED_MS = 50;         // 180 km/h — reject jumps faster than this (GTFS-RT ghost IDs)
+  const PREDICT_AHEAD_SHIP = 3;   // seconds ahead for ship prediction
+  const PREDICT_AHEAD_RAIL = 3;   // seconds ahead for train/tram (reduced from 8 to minimize bounce)
+  const ANIM_DURATION_DEFAULT = 2000; // ms — buses
+  const ANIM_DURATION_RAIL = 10000;   // ms — trains/trams: spread jump over longer time
+  const ANIM_DURATION_SHIP = 4000;    // ms — ships
+
+  let animFrameId = null;
+  let anims = [];
+
+  function animateMarker(marker, toLat, toLng, duration, snapCoords) {
+    const dur = duration || ANIM_DURATION_DEFAULT;
+    const from = marker.getLatLng();
+    // Replace any existing animation for this marker, carrying over the
+    // snap-segment hint so the next frame skips the full track scan
+    const prev = anims.find(a => a.marker === marker);
+    anims = anims.filter(a => a.marker !== marker);
+    anims.push({ marker, fromLat: from.lat, fromLng: from.lng, toLat, toLng, startTime: performance.now(), duration: dur, snapCoords: snapCoords || null, snapIdx: prev && prev.snapCoords === snapCoords ? prev.snapIdx : null });
+    if (!animFrameId) animFrameId = requestAnimationFrame(runAnims);
+  }
+
+  function moveVehicleMarker(marker, toLat, toLng, duration, snapCoords) {
+    // Animating markers far outside the viewport wastes a requestAnimationFrame
+    // update on every vehicle for every frame. Keep offscreen state current,
+    // but only animate markers that the user can actually see.
+    if (map.hasLayer(marker)) {
+      animateMarker(marker, toLat, toLng, duration, snapCoords);
+    } else {
+      // Drop any animation still queued for this marker first. runAnims does
+      // not check whether a marker is mounted, so a leftover animation would
+      // overwrite the position we are setting here on the very next frame.
+      anims = anims.filter(a => a.marker !== marker);
+      marker.setLatLng([toLat, toLng]);
+    }
+  }
+
+  function runAnims(now) {
+    const remaining = [];
+    for (const a of anims) {
+      const t = Math.min((now - a.startTime) / a.duration, 1);
+      let lat = a.fromLat + (a.toLat - a.fromLat) * t;
+      let lng = a.fromLng + (a.toLng - a.fromLng) * t;
+      // Snap interpolated position to track every frame (keeps marker on curves)
+      if (a.snapCoords) {
+        const s = snapToTrack(lat, lng, a.snapCoords, a.snapIdx);
+        a.snapIdx = s.idx;
+        lat = s.lat;
+        lng = s.lon;
+      }
+      a.marker.setLatLng([lat, lng]);
+      if (t < 1) remaining.push(a);
+    }
+    anims = remaining;
+    if (anims.length > 0) {
+      animFrameId = requestAnimationFrame(runAnims);
+    } else {
+      animFrameId = null;
+    }
+  }
+
+  // Predict future position from speed (m/s) and bearing (degrees, 0=north)
+  const EARTH_R = 6371000;
+  const DEG2RAD = Math.PI / 180;
+  const RAD2DEG = 180 / Math.PI;
+
+  // Calculate bearing from two positions (returns degrees, 0=north, clockwise)
+  function calcBearing(lat1, lon1, lat2, lon2) {
+    const dLon = (lon2 - lon1) * DEG2RAD;
+    const y = Math.sin(dLon) * Math.cos(lat2 * DEG2RAD);
+    const x = Math.cos(lat1 * DEG2RAD) * Math.sin(lat2 * DEG2RAD)
+            - Math.sin(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.cos(dLon);
+    return ((Math.atan2(y, x) * RAD2DEG) + 360) % 360;
+  }
+
+  // Get best bearing: use API bearing if valid, otherwise calculate from movement
+  function getBearing(v, entry) {
+    // API bearing > 0 means real data (0 is often "unknown/default")
+    if (v.bearing && v.bearing > 0) return v.bearing;
+    // Calculate from previous position if available
+    if (entry && entry.lastLat != null && (v.lat !== entry.lastLat || v.lon !== entry.lastLon)) {
+      const dist = Math.abs(v.lat - entry.lastLat) + Math.abs(v.lon - entry.lastLon);
+      if (dist > 0.00005) { // ~5m minimum movement to get reliable bearing
+        return calcBearing(entry.lastLat, entry.lastLon, v.lat, v.lon);
+      }
+    }
+    // Fall back to stored bearing from last good reading
+    if (entry && entry.lastBearing != null) return entry.lastBearing;
+    return null;
+  }
+
+  // =========================================================================
+
+  function haversineM(lat1, lon1, lat2, lon2) {
+    const dLat = (lat2 - lat1) * DEG2RAD;
+    const dLon = (lon2 - lon1) * DEG2RAD;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*DEG2RAD)*Math.cos(lat2*DEG2RAD)*Math.sin(dLon/2)**2;
+    return EARTH_R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  function predictPosition(lat, lon, speed, bearing, dt) {
+    if (!speed || speed <= 0 || bearing == null) return { lat, lon };
+    const d = speed * dt;
+    const bRad = bearing * DEG2RAD;
+    const latRad = lat * DEG2RAD;
+    return {
+      lat: lat + (d * Math.cos(bRad)) / EARTH_R * RAD2DEG,
+      lon: lon + (d * Math.sin(bRad)) / (EARTH_R * Math.cos(latRad)) * RAD2DEG,
+    };
+  }
+
+  // Look up track geometry by designation, with fallback to numeric prefix (e.g. "43X" → "43")
+  function getTrackCoords(designation) {
+    if (trackGeometry[designation]) return trackGeometry[designation];
+    const num = designation.match(/^\d+/);
+    return num ? trackGeometry[num[0]] : null;
+  }
+
+  // Snap a point to the nearest position across one or more polylines for a
+  // line (coords = array of shapes, each shape an array of [lat,lon] — see
+  // trackGeometry above for why shapes are kept separate rather than
+  // concatenated). Returns { lat, lon, bearing, idx } where bearing is the
+  // direction of the matched segment and idx a { shapeIdx, i } pair (pass
+  // back as hint on the next call). With a hint, only a window around the
+  // previous match — WITHIN THAT SAME SHAPE — is searched; vehicles move
+  // metres between frames, so the full multi-shape scan is rarely needed.
+  // Segments are only ever formed between two CONSECUTIVE points of the
+  // SAME shape — never across shapes — so there is no bogus long-distance
+  // "connector" segment for a real position to mismatch onto.
+  const SNAP_WINDOW = 30;          // segments searched on each side of the hint
+  const SNAP_MISS_SQ = 1e-6;       // ~(110 m)² in degree-space → redo full scan
+  function snapToTrack(lat, lon, shapes, hint) {
+    let ranges;
+    if (hint != null && shapes[hint.shapeIdx]) {
+      const coords = shapes[hint.shapeIdx];
+      ranges = [{
+        shapeIdx: hint.shapeIdx, coords,
+        lo: Math.max(0, hint.i - SNAP_WINDOW),
+        hi: Math.min(coords.length - 1, hint.i + SNAP_WINDOW),
+      }];
+    } else {
+      ranges = shapes.map((coords, shapeIdx) => ({ shapeIdx, coords, lo: 0, hi: coords.length - 1 }));
+    }
+
+    let bestDist = Infinity;
+    let bestLat = lat, bestLon = lon, bestBearing = null, bestIdx = hint || { shapeIdx: 0, i: 0 };
+    for (const { shapeIdx, coords, lo, hi } of ranges) {
+      for (let i = lo; i < hi; i++) {
+        const [aLat, aLon] = coords[i];
+        const [bLat, bLon] = coords[i + 1];
+        // Project point onto segment using approximate euclidean math
+        const dx = bLon - aLon, dy = bLat - aLat;
+        const len2 = dx * dx + dy * dy;
+        if (len2 === 0) continue;
+        const t = Math.max(0, Math.min(1, ((lon - aLon) * dx + (lat - aLat) * dy) / len2));
+        const pLat = aLat + t * dy;
+        const pLon = aLon + t * dx;
+        const dLat = lat - pLat, dLon = lon - pLon;
+        const dist = dLat * dLat + dLon * dLon;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestLat = pLat;
+          bestLon = pLon;
+          bestBearing = calcBearing(aLat, aLon, bLat, bLon);
+          bestIdx = { shapeIdx, i };
+        }
+      }
+    }
+    // Hinted search missed (vehicle jumped past the window, or crossed to
+    // the other shape) — do a full scan across all shapes
+    if (hint != null && bestDist > SNAP_MISS_SQ) {
+      return snapToTrack(lat, lon, shapes, null);
+    }
+    return { lat: bestLat, lon: bestLon, bearing: bestBearing, idx: bestIdx };
+  }
+
+  // Pause animations during zoom to prevent sliding
+  map.on('zoomstart', () => {
+    anims = []; // cancel in-flight animations
+  });
+
+  function getIconTier() {
+    const z = map.getZoom();
+    if (isMobile) {
+      // Mobile: minimal until zoom 15, then large with numbers
+      return z < 15 ? 'minimal' : 'large';
+    }
+    if (z < 15) return 'minimal';
+    if (z >= 16) return 'large';
+    return 'normal';
+  }
+
+  const _iconCache = new Map();
+
+  function createDotIcon(designation, color, type) {
+    const tier = getIconTier();
+    const key = `${tier}-${type}-${designation}-${color}`;
+    const cached = _iconCache.get(key);
+    if (cached) return cached;
+    let icon;
+    if (tier === 'minimal') {
+      const isBus = type === 'bus';
+      const minColor = isBus ? BUS_MINIMAL_COLOR : color;
+      const cls = isBus ? 'minimal-bus' : 'minimal-rail';
+      // Visual size stays small, but hit area is at least 24x24 for touch targets
+      const hitSz = 24;
+      const hitHalf = hitSz / 2;
+      icon = L.divIcon({
+        className: 'smooth-move',
+        html: `<div class="veh-dot ${cls}"><div class="veh-body" style="background:${minColor}"></div></div>`,
+        iconSize: [hitSz, hitSz],
+        iconAnchor: [hitHalf, hitHalf],
+        popupAnchor: [0, -hitHalf],
+      });
+    } else {
+      const large = tier === 'large';
+      const mob = isMobile ? ' mobile' : '';
+      const rail = type !== 'bus' ? ' rail' : '';
+      const cls = 'veh-dot' + (large ? ' large' : '') + mob + rail;
+      const s = large
+        ? (isMobile ? 22 : 28)
+        : (isMobile ? 16 : 20);
+      icon = L.divIcon({
+        className: 'smooth-move',
+        html: `<div class="${cls}"><div class="veh-body" style="background:${color}"><span class="veh-line">${designation}</span></div></div>`,
+        iconSize: [s, s],
+        iconAnchor: [s / 2, s / 2],
+        popupAnchor: [0, -s / 2],
+      });
+    }
+    _iconCache.set(key, icon);
+    return icon;
+  }
+
+
+  function createVehicleMarker(latlng, category, ariaLabel) {
+    return L.marker(latlng, {
+      icon: createDotIcon(category.designation, category.color, category.type),
+      title: ariaLabel || '',
+      alt: ariaLabel || '',
+    });
+  }
+
+  function shouldShowBusAtZoom() {
+    return map.getZoom() >= (isMobile ? BUS_MIN_ZOOM_MOBILE : BUS_MIN_ZOOM_DESKTOP);
+  }
+
+  function isLayerVisible(category) {
+    return layerState[category.type] !== false;
+  }
+
+  // Leaflet creates one DOM tree per vehicle marker. On mobile Safari, adding
+  // the full feed (~1,700 markers) in one task can freeze the main thread for
+  // several seconds. Yield between small batches so tiles and route responses
+  // can paint while the initial marker set is being built.
+  const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  async function updateVehicles(vehicles) {
+    const seenIds = new Set();
+    let visibleCount = 0;
+    let processed = 0;
+    // Keep a modest buffer so markers are ready just before a pan reveals
+    // them, without paying for thousands of offscreen DOM nodes.
+    const renderBounds = map.getBounds().pad(0.35);
+    // Feeds are not ordered geographically. Render the useful subset first,
+    // otherwise Safari may process well over a thousand offscreen vehicles
+    // before the first dot appears in the current view.
+    const nearbyVehicles = [];
+    const otherVehicles = [];
+    for (const v of vehicles) {
+      (renderBounds.contains([v.lat, v.lon]) ? nearbyVehicles : otherVehicles).push(v);
+    }
+
+    for (const v of nearbyVehicles.concat(otherVehicles)) {
+      if (processed > 0 && processed % 50 === 0) {
+        await yieldToBrowser();
+      }
+      processed++;
+      seenIds.add(v.id);
+
+      const category = getVehicleCategory(v);
+
+      const visible = isLayerVisible(category) &&
+        (category.type !== 'bus' || shouldShowBusAtZoom());
+      if (visible) visibleCount++;
+
+      if (vehicleMarkers[v.id]) {
+        // ---- Update existing marker ----
+        const entry = vehicleMarkers[v.id];
+        const prevCategory = entry.category;
+        const prevTimestamp = entry.data?.timestamp || 0;
+        entry.category = category;
+        entry.data = v;
+
+        // Only update when actual server position changed (skip cache duplicates)
+        const posChanged = v.lat !== entry.lastLat || v.lon !== entry.lastLon;
+        if (posChanged) {
+          // Reject impossible jumps (e.g. two trains sharing one vehicle ID)
+          // Check both server timestamp AND client-side elapsed time
+          const serverDt = (v.timestamp || 0) - prevTimestamp;
+          const clientDt = (Date.now() / 1000) - (entry.lastUpdateTime || 0);
+          const dt = Math.max(serverDt, clientDt);
+          if (dt > 0 && dt < 120) {
+            const jumpDist = haversineM(entry.lastLat, entry.lastLon, v.lat, v.lon);
+            if (jumpDist / dt > MAX_SPEED_MS) {
+              // Impossible speed — keep old position, update popup data only
+              continue;
+            }
+          }
+
+          // Reject direction reversals for rail vehicles (ID collision: two trains sharing one ID)
+          // Real direction changes (turning at terminus) take minutes; ID collisions flip every 2-10s
+          if ((category.type === 'metro' || category.type === 'train') && entry.lastBearing != null) {
+            const moveBearing = calcBearing(entry.lastLat, entry.lastLon, v.lat, v.lon);
+            const moveDist = haversineM(entry.lastLat, entry.lastLon, v.lat, v.lon);
+            if (moveDist > 10) { // any meaningful movement
+              let bearingDiff = Math.abs(moveBearing - entry.lastBearing);
+              if (bearingDiff > 180) bearingDiff = 360 - bearingDiff;
+              // Reject reversal if it happened quickly (<60s) — real turns take longer
+              if (bearingDiff > 140 && clientDt < 60) {
+                continue;
+              }
+            }
+          }
+
+          // Get best bearing: API if valid, otherwise calculate from movement
+          const bearing = getBearing(v, entry);
+          if (bearing != null) entry.lastBearing = bearing;
+
+          // Animate to position — predict ahead for slow-updating types
+          let targetLat = v.lat, targetLon = v.lon;
+          if (category.type === 'ship' && v.speed > 0 && bearing != null) {
+            const pred = predictPosition(targetLat, targetLon, v.speed, bearing, PREDICT_AHEAD_SHIP);
+            moveVehicleMarker(entry.marker, pred.lat, pred.lon, ANIM_DURATION_SHIP);
+          } else if (category.type === 'train' || category.type === 'tram' || category.type === 'metro') {
+            // Rail types ~6-60s updates — snap first, then predict along track
+            const coords = getTrackCoords(category.designation);
+
+            // Snap raw GPS to track before anything else
+            if (coords) {
+              const snapped = snapToTrack(targetLat, targetLon, coords);
+              targetLat = snapped.lat;
+              targetLon = snapped.lon;
+              // A segment's bearing follows the shape's stored point order,
+              // and both directions' shapes usually start at the same end —
+              // so for half the trains it points backwards. Stored as-is it
+              // made the reversal guard above reject ~70 % of metro/train
+              // updates (trains froze for up to 60 s, then caught up).
+              // Align it with the known heading; with no heading, don't guess.
+              if (snapped.bearing != null && bearing != null) {
+                let segDiff = Math.abs(snapped.bearing - bearing);
+                if (segDiff > 180) segDiff = 360 - segDiff;
+                entry.lastBearing = segDiff > 90 ? (snapped.bearing + 180) % 360 : snapped.bearing;
+              }
+            }
+
+            // Only predict ahead if we have a reliable bearing from the track
+            // and the vehicle is actually moving (not stopped at a station)
+            if (entry.lastBearing != null) {
+              const now = Date.now() / 1000;
+              const timeDt = now - (entry.lastUpdateTime || now);
+              if (timeDt > 1 && timeDt < 120) {
+                const distM = haversineM(entry.lastLat, entry.lastLon, v.lat, v.lon);
+                const calcSpeed = distM / timeDt; // m/s
+                // Only predict if clearly moving (>2 m/s = 7 km/h) and not too fast
+                if (calcSpeed > 2 && calcSpeed < 50) {
+                  // Use track bearing (not calculated bearing) for prediction direction
+                  const pred = predictPosition(targetLat, targetLon, calcSpeed, entry.lastBearing, PREDICT_AHEAD_RAIL);
+                  // Snap the predicted position back to track to stay on rails
+                  if (coords) {
+                    const predSnapped = snapToTrack(pred.lat, pred.lon, coords);
+                    targetLat = predSnapped.lat;
+                    targetLon = predSnapped.lon;
+                  } else {
+                    targetLat = pred.lat;
+                    targetLon = pred.lon;
+                  }
+                }
+              }
+            }
+            moveVehicleMarker(entry.marker, targetLat, targetLon, ANIM_DURATION_RAIL, coords);
+          } else {
+            // Buses update every ~2s — short animation matches update rate
+            moveVehicleMarker(entry.marker, targetLat, targetLon);
+          }
+          entry.lastLat = v.lat;
+          entry.lastLon = v.lon;
+          entry.lastUpdateTime = Date.now() / 1000;
+        }
+
+        // Update visibility
+        const shouldRender = visible && renderBounds.contains([v.lat, v.lon]);
+        if (shouldRender) {
+          if (!map.hasLayer(entry.marker)) {
+            entry.marker.addTo(map);
+            const el = entry.marker.getElement();
+            if (el) el.setAttribute('data-vid', v.id);
+          }
+        } else {
+          if (map.hasLayer(entry.marker)) map.removeLayer(entry.marker);
+        }
+
+        // Only update icon if type, designation or color actually changed
+        if (prevCategory.type !== category.type || prevCategory.designation !== category.designation || prevCategory.color !== category.color) {
+          entry.marker.setIcon(createDotIcon(category.designation, category.color, category.type));
+
+          entry.marker.unbindTooltip();
+
+          // New DOM element from setIcon — no transition needed, JS animation handles it
+        }
+
+        if (entry.marker.isPopupOpen()) {
+          // update() re-invokes the content function bound at creation.
+          // setPopupContent(string) would replace that function, so a popup
+          // closed and reopened later would show whatever was frozen in.
+          entry.marker.getPopup().update();
+        }
+      } else {
+        // ---- Create new marker ----
+        let initLat = v.lat, initLon = v.lon;
+        const bearing = getBearing(v, null);
+
+        // Snap initial position for rail types
+        const isRail = category.type === 'train' || category.type === 'tram' || category.type === 'metro';
+        if (isRail) {
+          const coords = getTrackCoords(category.designation);
+          if (coords) {
+            const snapped = snapToTrack(initLat, initLon, coords);
+            initLat = snapped.lat;
+            initLon = snapped.lon;
+          }
+        }
+
+        const _typeLabels = { metro: 'Tunnelbana', train: 'Pendeltåg', ship: 'Båt', bus: 'Buss' };
+        const _tl = category.type === 'tram' ? (TRAM_NAMES[category.designation] || 'Spårväg') : (_typeLabels[category.type] || 'Buss');
+        const destLabel = destinationText(v).text;
+        const ariaLabel = `${_tl} ${category.designation} ${destLabel}`;
+        const marker = createVehicleMarker([initLat, initLon], category, ariaLabel);
+
+        // Popup formatting (notably locale-aware time formatting) is wasted
+        // for almost every marker. Build it only when this marker is opened.
+        marker.bindPopup(() => {
+          const current = vehicleMarkers[v.id];
+          return buildPopup(current ? current.data : v, current ? current.category : category);
+        });
+        marker.on('popupopen', () => {
+          const current = vehicleMarkers[v.id];
+          const currentCategory = current ? current.category : category;
+          plausible('Vehicle Click', { props: { type: currentCategory.type, line: currentCategory.designation } });
+        });
+
+        const shouldRender = visible && renderBounds.contains([v.lat, v.lon]);
+        if (shouldRender) {
+          marker.addTo(map);
+        }
+        // Set data-vid on DOM element for test scripts
+        const iconEl = marker.getElement();
+        if (iconEl) iconEl.setAttribute('data-vid', v.id);
+
+        vehicleMarkers[v.id] = { marker, category, data: v, lastLat: v.lat, lastLon: v.lon, lastBearing: bearing, lastUpdateTime: Date.now() / 1000 };
+      }
+    }
+
+    // Remove markers for vehicles no longer in feed
+    for (const id of Object.keys(vehicleMarkers)) {
+      if (!seenIds.has(id)) {
+        if (map.hasLayer(vehicleMarkers[id].marker)) {
+          map.removeLayer(vehicleMarkers[id].marker);
+        }
+        delete vehicleMarkers[id];
+      }
+    }
+
+    return visibleCount;
+  }
+
+  window.copyPopupId = function(el, text) {
+    const orig = el.textContent;
+    const finish = () => {
+      el.textContent = 'Kopierad!';
+      el.classList.add('copied');
+      setTimeout(() => { el.textContent = orig; el.classList.remove('copied'); }, 1500);
+    };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(finish).catch(finish);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta); finish();
+    }
+  };
+
+  function destinationText(v) {
+    if (v.headsign) return { text: 'mot ' + v.headsign, missing: false };
+    return { text: v.added ? 'extratur' : 'destination saknas', missing: true };
+  }
+
+  function buildPopup(vehicle, category) {
+    const speedMs = (vehicle.speed && vehicle.speed >= 0) ? vehicle.speed : null;
+    const isShip = category.type === 'ship';
+    const speedText = speedMs !== null
+      ? (isShip ? `${(speedMs * 1.944).toFixed(1)} knop` : `${(speedMs * 3.6).toFixed(0)} km/h`)
+      : null;
+    const ts = vehicle.timestamp
+      ? new Date(vehicle.timestamp * 1000).toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : 'Okänd';
+
+    const TYPE_LABELS = {
+      metro: 'Tunnelbana',
+      train: 'Pendeltåg',
+      ship: 'Båt',
+      bus: 'Buss',
+    };
+    const typeLabel = category.type === 'tram'
+      ? (TRAM_NAMES[category.designation] || 'Spårväg')
+      : (TYPE_LABELS[category.type] || 'Buss');
+    const statusText = vehicle.status === 'STOPPED_AT' ? 'Vid hållplats'
+      : vehicle.status === 'INCOMING_AT' ? 'Anländer till hållplats'
+      : 'I trafik';
+
+    // An ADDED trip has no destination anywhere in the data — it is an extra
+    // departure outside the published timetable, and the destination lives in
+    // the timetable. Say that rather than leaving a hole where it should be.
+    const dest = destinationText(vehicle);
+    const headsign = dest.missing
+      ? ` <span class="popup-nodest">· ${escapeHtml(dest.text)}</span>`
+      : ` ${escapeHtml(dest.text)}`;
+    const safeDesignation = escapeHtml(category.designation);
+    const safeVehicleId = escapeHtml(vehicle.id);
+    const safeTripId = escapeHtml(vehicle.trip_id);
+    const safeColor = escapeHtml(category.color);
+
+    const isFollowing = window.__followingVehicleId === vehicle.id;
+    const followBtn = window.__APP_META ? `
+      <button class="popup-follow-btn" ${isFollowing ? 'style="background:#6366f1"' : ''} onclick="window.__followingVehicleId='${safeVehicleId}';this.textContent='Följer';this.style.background='#6366f1';window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
+        type:'follow',
+        vehicle_id:'${safeVehicleId}',
+        line:'${safeDesignation}',
+        headsign:'${escapeHtml((vehicle.headsign || '').replace(/'/g, "\\'"))}',
+        transport_mode:'${escapeHtml((category.type || '').toUpperCase())}',
+        metro_group:'${escapeHtml(category.metroGroup || '')}'
+      }))">${isFollowing ? 'Följer' : 'Följ'}</button>
+    ` : '';
+
+    return `
+      <div class="popup-line" style="color:${safeColor}">
+        ${escapeHtml(typeLabel)} ${safeDesignation}${headsign}
+      </div>
+      <div class="popup-detail">
+        ${speedText !== null ? `Hastighet: ${speedText}<br>` : ''}
+        Status: ${statusText}<br>
+        Uppdaterad: ${ts}
+      </div>
+      ${followBtn}
+      ${debugMode ? `<div class="popup-ids">
+        <span class="popup-id-chip" onclick="copyPopupId(this,'${safeTripId}')" title="Kopiera trip_id">trip:${safeTripId}</span>
+        <span class="popup-id-chip" onclick="copyPopupId(this,'${safeVehicleId}')" title="Kopiera vehicle ID">veh:${safeVehicleId}</span>
+      </div>` : ''}
+    `;
+  }
+
+  // Apply visibility for all layers based on toggle state + zoom
+  function applyLayerVisibility() {
+    // Metro route layers
+    for (const group of ['green', 'red', 'blue']) {
+      for (const layer of metroRouteLayers[group]) {
+        if (layerState.metro) { if (!map.hasLayer(layer)) layer.addTo(map); }
+        else { if (map.hasLayer(layer)) map.removeLayer(layer); }
+      }
+    }
+
+    // Tram route layers
+    for (const layer of tramRouteLayers) {
+      if (layerState.tram) { if (!map.hasLayer(layer)) layer.addTo(map); }
+      else { if (map.hasLayer(layer)) map.removeLayer(layer); }
+    }
+
+    // Train route layers
+    for (const layer of trainRouteLayers) {
+      if (layerState.train) { if (!map.hasLayer(layer)) layer.addTo(map); }
+      else { if (map.hasLayer(layer)) map.removeLayer(layer); }
+    }
+
+    // Vehicle markers
+    let visibleCount = 0;
+    const renderBounds = map.getBounds().pad(0.35);
+    for (const [id, entry] of Object.entries(vehicleMarkers)) {
+      const visible = isLayerVisible(entry.category) &&
+        (entry.category.type !== 'bus' || shouldShowBusAtZoom());
+      if (visible) visibleCount++;
+      const shouldRender = visible && renderBounds.contains(entry.marker.getLatLng());
+      if (shouldRender) {
+        if (!map.hasLayer(entry.marker)) {
+          entry.marker.addTo(map);
+          const el = entry.marker.getElement();
+          if (el) el.setAttribute('data-vid', id);
+        }
+      } else {
+        if (map.hasLayer(entry.marker)) map.removeLayer(entry.marker);
+      }
+    }
+    document.getElementById('vehicle-count').textContent = visibleCount;
+  }
+
+  // Layer toggling is handled by toolbar chip click handlers above
+
+  let prevIconTier = getIconTier();
+
+  function rebuildAllIcons() {
+    _iconCache.clear();
+    for (const entry of Object.values(vehicleMarkers)) {
+      // Offscreen markers are rebuilt too. Skipping them was cheap but left
+      // them holding an icon from the previous zoom tier or theme, which then
+      // showed up the moment a pan brought them back. setIcon on an unmounted
+      // marker touches no DOM, and _iconCache dedupes the construction.
+      const c = entry.category;
+      entry.marker.setIcon(createDotIcon(c.designation, c.color, c.type));
+    }
+  }
+
+  let _zoomTimer = null;
+  map.on('zoomend', () => {
+    applyLayerVisibility();
+    applyStationVisibility();
+    clearTimeout(_zoomTimer);
+    _zoomTimer = setTimeout(() => {
+      plausible('Zoom Level', { props: { zoom: String(map.getZoom()) } });
+    }, 2000);
+    const nowTier = getIconTier();
+    if (nowTier !== prevIconTier) {
+      prevIconTier = nowTier;
+      rebuildAllIcons();
+    }
+  });
+
+  // Leaflet markers are DOM elements, so keep only the current viewport plus
+  // a pan buffer attached. This makes panning cheap while avoiding ~1,700
+  // permanently mounted elements on a typical full feed.
+  map.on('moveend', applyLayerVisibility);
+
+  mobileQuery.addEventListener('change', (e) => {
+    isMobile = e.matches;
+    prevIconTier = getIconTier();
+    rebuildAllIcons();
+    applyLayerVisibility();
+  });
+
+  // =========================================================================
+  // Data fetching loop
+  // =========================================================================
+
+  let _lastVehicleTs = null;
+  let _vehicleMap = {};  // id -> vehicle object, maintained across polls
+
+  // Trafiklab normally updates every ~2s; backend /health flags data "stale"
+  // past 30s. Give a bit more buffer here so one slow poll doesn't flicker
+  // the banner — this is for a real upstream outage, not jitter.
+  const STALE_THRESHOLD_SECONDS = 90;
+
+  function formatStaleAge(ageSeconds) {
+    const mins = Math.floor(ageSeconds / 60);
+    if (mins < 60) return `${mins} min`;
+    const hours = Math.floor(mins / 60);
+    return `${hours} h ${mins % 60} min`;
+  }
+
+  function updateStaleBanner(dataTimestamp) {
+    if (!dataTimestamp) return;
+    const ageSeconds = Date.now() / 1000 - dataTimestamp;
+    let banner = document.getElementById('stale-banner');
+
+    if (ageSeconds > STALE_THRESHOLD_SECONDS) {
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'stale-banner';
+        banner.className = 'stale-banner';
+        document.body.appendChild(banner);
+      }
+      banner.textContent =
+        `⚠️ Trafiklabs realtidsdata verkar ligga nere — visar positioner från ${formatStaleAge(ageSeconds)} sedan`;
+    } else if (banner) {
+      banner.remove();
+    }
+  }
+
+  // A slow poll must not overlap the next one, and a response that arrives
+  // after a reset must not be applied to the state that replaced it.
+  let _vehicleInFlight = false;
+  let _vehicleGeneration = 0;
+
+  async function fetchVehicles(initialResponse) {
+    if (_vehicleInFlight) return;
+    _vehicleInFlight = true;
+    const generation = _vehicleGeneration;
+    try {
+      const url = _lastVehicleTs ? `/api/vehicles?since=${_lastVehicleTs}` : '/api/vehicles';
+      const prefetched = initialResponse ? await initialResponse : null;
+      const resp = prefetched || await fetch(url);
+      if (!resp.ok) {
+        plausible('API Error', { props: { status: String(resp.status) } });
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+
+      if (data.error) {
+        console.warn('Vehicle API error:', data.error);
+      }
+
+      // Skip processing if timestamp unchanged (check before mutating state)
+      if (generation !== _vehicleGeneration) return;
+
+      const newTs = data.ts || data.timestamp;
+      updateStaleBanner(newTs);
+      // Out-of-order responses happen on a slow network and when a
+      // backgrounded tab resumes. Equal means nothing changed; older means the
+      // response predates what we already show and would roll the map back.
+      if (newTs && _lastVehicleTs && newTs <= _lastVehicleTs) return;
+      _lastVehicleTs = newTs;
+
+      let vehicles;
+      if (data.vehicles) {
+        // Full response — rebuild vehicle map
+        _vehicleMap = {};
+        for (const v of data.vehicles) _vehicleMap[v.id] = v;
+        vehicles = data.vehicles;
+      } else if (data.u !== undefined) {
+        // Diff response — apply changes to local map
+        for (const v of (data.a || [])) _vehicleMap[v.id] = v;
+        for (const id of (data.r || [])) delete _vehicleMap[id];
+        for (const delta of (data.u || [])) {
+          const existing = _vehicleMap[delta.id];
+          if (existing) {
+            for (const key in delta) {
+              if (key !== 'id') existing[key] = delta[key];
+            }
+          }
+        }
+        vehicles = Object.values(_vehicleMap);
+      } else {
+        return; // Unknown format
+      }
+
+      const visibleCount = await updateVehicles(vehicles);
+      // updateVehicles yields between batches; a reset may have landed while
+      // it ran, in which case this count describes state that no longer exists.
+      if (generation !== _vehicleGeneration) return;
+
+      document.getElementById('vehicle-count').textContent = visibleCount;
+      document.getElementById('last-update').textContent =
+        new Date().toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch (err) {
+      console.error('Failed to fetch vehicles:', err);
+      // Reset to force full fetch next time. Bumping the generation discards
+      // any response still in flight from before this reset — applying a delta
+      // to the emptied map would leave the client half-built.
+      _vehicleGeneration++;
+      _lastVehicleTs = null;
+      _vehicleMap = {};
+      document.getElementById('last-update').textContent = 'Fel vid hämtning: ' + err.message;
+    } finally {
+      _vehicleInFlight = false;
+    }
+  }
+
+  // =========================================================================
+  // Realtime visitor count
+  // =========================================================================
+
+  async function fetchVisitors() {
+    try {
+      const resp = await fetch('/api/visitors');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const el = document.getElementById('visitor-count');
+      if (data.visitors > 0) {
+        el.textContent = ` för ${data.visitors} besökare`;
+      } else {
+        el.textContent = '';
+      }
+    } catch (e) {
+      // Silently ignore - visitor count is non-critical
+    }
+  }
+
+  // =========================================================================
+  // Native app zoom helpers (called from injected JS)
+  // =========================================================================
+
+  window.__zoomToStop = function(lat, lon) {
+    map.flyTo([lat, lon], 16, { duration: 0.8 });
+  };
+
+  window.__zoomToLine = function(lineName) {
+    const bounds = [];
+    for (const entry of Object.values(vehicleMarkers)) {
+      if (entry.data && String(entry.data.line) === String(lineName)) {
+        bounds.push([entry.data.lat, entry.data.lon]);
+      }
+    }
+    if (bounds.length > 0) {
+      map.flyToBounds(bounds, { padding: [60, 60], maxZoom: 14, duration: 0.8 });
+    }
+  };
+
+  // =========================================================================
+  // Visibility management — pause polling when app is backgrounded
+  // =========================================================================
+
+  let _vehicleInterval = null;
+  let _visitorInterval = null;
+  let _versionInterval = null;
+
+  function startPolling() {
+    if (!_vehicleInterval) {
+      _vehicleInterval = setInterval(fetchVehicles, POLL_INTERVAL);
+    }
+    if (!_visitorInterval) {
+      _visitorInterval = setInterval(fetchVisitors, 30000);
+    }
+    if (!_versionInterval) {
+      _versionInterval = setInterval(checkVersion, 60000);
+    }
+  }
+
+  function stopPolling() {
+    // Anything in flight belongs to the session we are ending.
+    _vehicleGeneration++;
+    if (_vehicleInterval) { clearInterval(_vehicleInterval); _vehicleInterval = null; }
+    if (_visitorInterval) { clearInterval(_visitorInterval); _visitorInterval = null; }
+    if (_versionInterval) { clearInterval(_versionInterval); _versionInterval = null; }
+  }
+
+  function onHidden() {
+    if (isScreensaver) return; // screensaver never pauses
+    stopPolling();
+  }
+
+  function onVisible() {
+    if (isScreensaver) return;
+    // Delta snapshot may be stale after long pause — force full fetch
+    _lastVehicleTs = null;
+    _vehicleMap = {};
+    fetchVehicles();
+    fetchVisitors();
+    startPolling();
+  }
+
+  // Primary: Page Visibility API
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) onHidden(); else onVisible();
+  });
+
+  // Fallback: pagehide/pageshow — more reliable on some iOS PWA versions.
+  // `pageshow` also fires on the initial navigation; only a bfcache restore
+  // needs onVisible(), otherwise startup issues a duplicate vehicle request.
+  window.addEventListener('pagehide', onHidden);
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted && !document.hidden) onVisible();
+  });
+
+  // Extra: Page Lifecycle API freeze/resume (Chrome)
+  if ('onfreeze' in document) {
+    document.addEventListener('freeze', onHidden);
+    document.addEventListener('resume', () => { if (!document.hidden) onVisible(); });
+  }
+
+  // =========================================================================
+  // Initialization
+  // =========================================================================
+
+  async function init() {
+    // Start independent requests together. Previously the route requests only
+    // began after every vehicle marker had been created, which serialized the
+    // loading waterfall and was especially visible on mobile Safari.
+    const firstVehicles = fetchVehicles(window.__initialVehicles);
+    window.__initialVehicles = null;
+    Promise.all([loadMetroRoutes(), loadTramRoutes(), loadTrainRoutes()]);
+
+    // Non-critical: stations and visitor count
+    loadStations();
+    fetchVisitors();
+
+    await firstVehicles;
+    startPolling();
+
+    // Service worker: cache:ar bara statiska resurser (HTML/API rörs ej)
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }
+
+  init();
+
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.DS_Store
+
+# Built from Trafiklab's static data (see README) – rebuild instead of committing
+trip_lookup.json
+trip_lookup.json.bak
+stations.json
+*_lines.geojson
+regions/*/trip_lookup.json
+regions/*/stations.json
+regions/*/*_lines.geojson
+*.zip

@@ -1,0 +1,13 @@
+{
+  "name": "sl-map-open-source",
+  "private": true,
+  "description": "Browser test for map.html (the app itself needs no npm packages)",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "test:browser": "node map-behaviour-test.mjs"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.40.0"
+  }
+}

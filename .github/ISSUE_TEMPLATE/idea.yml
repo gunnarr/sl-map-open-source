@@ -1,0 +1,21 @@
+name: Idé / Idea
+description: Föreslå en förbättring – gärna innan du skriver koden. / Suggest an improvement – ideally before writing the code.
+labels: [idea]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Läs avsnittet om vart projektet är på väg i [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) först.
+        Please read the section on where the project is going in [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Vilket problem löser det? / What problem does it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Förslag / Proposal
+    validations:
+      required: true

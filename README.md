@@ -143,9 +143,9 @@ egen `map.html` i `regions/<operatör>/` – servern tar den före den i roten.
 
 ## Det som inte finns här
 
-Apparna för iPhone, iPad och Apple TV (och tjänsten bakom Live Activities) är separata projekt och ingår inte. Det gör
-inte heller sajtens övriga sidor, mina deployskript, min statistik eller mitt nyhetsbrev. Frågor om apparna ställer du
-via kontaktformuläret på [sl-map.gunnar.se](https://sl-map.gunnar.se).
+Apparna för iPhone, iPad och Apple TV är separata projekt och ingår inte. Det gör inte heller sajtens övriga sidor,
+mina deployskript, min statistik eller mitt nyhetsbrev. Frågor om apparna ställer du via kontaktformuläret på
+[sl-map.gunnar.se](https://sl-map.gunnar.se).
 
 ## Bidra
 

@@ -143,9 +143,9 @@ own `map.html` in `regions/<operator>/` – the server prefers it over the one i
 
 ## What's not here
 
-The iPhone, iPad and Apple TV apps (and the service behind their Live Activities) are separate projects and not part
-of this repo. Neither are the site's other pages, my deploy scripts, analytics or newsletter. Questions about the apps
-go through the contact form at [sl-map.gunnar.se](https://sl-map.gunnar.se).
+The iPhone, iPad and Apple TV apps are separate projects and not part of this repo. Neither are the site's other
+pages, my deploy scripts, analytics or newsletter. Questions about the apps go through the contact form at
+[sl-map.gunnar.se](https://sl-map.gunnar.se).
 
 ## Contributing
 

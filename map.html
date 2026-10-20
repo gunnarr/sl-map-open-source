@@ -1702,10 +1702,70 @@ document.addEventListener('DOMContentLoaded', function() {
   // Geolocation
   // =========================================================================
 
+  // One tap watches the position for a short while instead of taking a single
+  // fix: on Android the first answer is often a wifi/cell guess that can be far
+  // off (sometimes with a small, confident accuracy), and GPS only corrects it
+  // a few seconds later. The watch then stops to spare the battery.
+  const GEO_WATCH_MS = 60000;
+
   let userLocationMarker = null;
   let userAccuracyCircle = null;
+  let geoWatchId = null;
+  let geoStopTimer = null;
+  let geoUserMovedMap = false;
 
-  document.getElementById('locate-btn').addEventListener('click', function() {
+  const locateBtn = document.getElementById('locate-btn');
+
+  function formatAccuracy(m) {
+    if (m < 1000) return '±' + Math.round(m) + ' m';
+    return '±' + (m / 1000).toFixed(1).replace('.', ',') + ' km';
+  }
+
+  function stopGeoWatch() {
+    if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
+    geoWatchId = null;
+    clearTimeout(geoStopTimer);
+    geoStopTimer = null;
+  }
+
+  function showUserLocation(lat, lng, accuracy) {
+    const label = 'Du är här (' + formatAccuracy(accuracy) + ')';
+    if (userLocationMarker) {
+      userLocationMarker.setLatLng([lat, lng]);
+      userLocationMarker.setTooltipContent(label);
+      userAccuracyCircle.setLatLng([lat, lng]);
+      userAccuracyCircle.setRadius(accuracy);
+      return;
+    }
+    userAccuracyCircle = L.circle([lat, lng], {
+      radius: accuracy,
+      fillColor: '#60a5fa',
+      fillOpacity: 0.1,
+      color: '#60a5fa',
+      weight: 1,
+      opacity: 0.3,
+    }).addTo(map);
+
+    userLocationMarker = L.circleMarker([lat, lng], {
+      radius: 7,
+      fillColor: '#60a5fa',
+      fillOpacity: 1,
+      color: '#fff',
+      weight: 2,
+    }).addTo(map);
+
+    userLocationMarker.bindTooltip(label, {
+      permanent: false,
+      direction: 'top',
+      offset: [0, -10],
+      className: 'vehicle-tooltip',
+    });
+  }
+
+  // Follow the refined position until the user drags the map themselves.
+  map.on('dragstart', () => { geoUserMovedMap = true; });
+
+  locateBtn.addEventListener('click', function() {
     if (!navigator.geolocation) {
       alert('Din webbläsare stöder inte platsdelning.');
       return;
@@ -1713,46 +1773,33 @@ document.addEventListener('DOMContentLoaded', function() {
     const btn = this;
     btn.style.color = '#60a5fa';
     plausible('Geolocation');
-    navigator.geolocation.getCurrentPosition(
+
+    stopGeoWatch();
+    let gotFix = false;
+    geoUserMovedMap = false;
+
+    geoWatchId = navigator.geolocation.watchPosition(
       function(pos) {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        const accuracy = pos.coords.accuracy;
+        showUserLocation(lat, lng, pos.coords.accuracy);
 
-        if (userLocationMarker) {
-          userLocationMarker.setLatLng([lat, lng]);
-          userAccuracyCircle.setLatLng([lat, lng]);
-          userAccuracyCircle.setRadius(accuracy);
-        } else {
-          userAccuracyCircle = L.circle([lat, lng], {
-            radius: accuracy,
-            fillColor: '#60a5fa',
-            fillOpacity: 0.1,
-            color: '#60a5fa',
-            weight: 1,
-            opacity: 0.3,
-          }).addTo(map);
-
-          userLocationMarker = L.circleMarker([lat, lng], {
-            radius: 7,
-            fillColor: '#60a5fa',
-            fillOpacity: 1,
-            color: '#fff',
-            weight: 2,
-          }).addTo(map);
-
-          userLocationMarker.bindTooltip('Du är här', {
-            permanent: false,
-            direction: 'top',
-            offset: [0, -10],
-            className: 'vehicle-tooltip',
-          });
+        if (!gotFix) {
+          map.setView([lat, lng], 15);
+          btn.classList.add('active');
+        } else if (!geoUserMovedMap) {
+          map.panTo([lat, lng]);
         }
-
-        map.setView([lat, lng], 15);
-        btn.classList.add('active');
+        gotFix = true;
       },
       function(err) {
+        // Once there is a fix, a timeout only means nothing newer came in;
+        // keep watching until GEO_WATCH_MS ends it.
+        if (gotFix) {
+          if (err.code === 1) stopGeoWatch();
+          return;
+        }
+        stopGeoWatch();
         btn.style.color = '';
         if (err.code === 1) {
           alert('Platsdelning nekades. Tillåt platsåtkomst i webbläsaren.');
@@ -1760,8 +1807,13 @@ document.addEventListener('DOMContentLoaded', function() {
           alert('Kunde inte hämta din position: ' + err.message);
         }
       },
-      { enableHighAccuracy: true, timeout: 10000 }
+      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
     );
+    geoStopTimer = setTimeout(stopGeoWatch, GEO_WATCH_MS);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopGeoWatch();
   });
 
   // =========================================================================

@@ -138,6 +138,12 @@
       s.src = p.src;
       document.head.appendChild(s);
     })();
+    // The iPhone Duo's user agent names no model, but its screen does: 466x678 pt
+    // (the outer display, which screen.* keeps reporting when unfolded). One event
+    // per page load lets Plausible count Duo visitors; it carries nothing else.
+    if (/iPhone/.test(navigator.userAgent) && screen.width === 466 && screen.height === 678) {
+      plausible('iPhone Duo', { props: { posture: innerWidth > 466 ? 'unfolded' : 'folded' } });
+    }
   </script>
   <link rel="stylesheet" href="/leaflet.css" />
   <script defer src="/leaflet.js"></script>
@@ -225,6 +231,8 @@
     }
 
     #map {
+      position: relative;
+      z-index: 0;
       width: 100vw;
       height: 100vh; /* fallback for browsers without dvh support */
       height: 100dvh; /* tracks the real visible viewport, not the chrome-hidden max height — fixes bottom-anchored controls sitting behind Safari's toolbar */
@@ -279,6 +287,8 @@
 
     .toolbar-chip {
       display: flex;
+      font-family: inherit;
+      line-height: 1;
       align-items: center;
       gap: 5px;
       height: 28px;
@@ -299,7 +309,46 @@
     .toolbar-chip:hover { background: var(--chip-bg-hover); }
 
     .toolbar-chip.off {
-      opacity: 0.35;
+      opacity: 0.75; /* 0.35 left the label at about 2:1 against the toolbar */
+    }
+
+    /* Off also shows as a hollow dot, not only as a fainter chip */
+    .toolbar-chip.off .chip-dot {
+      background: transparent !important;
+      box-shadow: inset 0 0 0 1.5px currentColor;
+    }
+
+    /* Hidden until focused; Tab otherwise passes every vehicle before the status bar */
+    .skip-map {
+      position: fixed;
+      left: 16px;
+      bottom: calc(48px + env(safe-area-inset-bottom, 0px));
+      z-index: 1003;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: var(--text-primary);
+      color: var(--bg-body);
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      transform: translateY(200%);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .skip-map:focus {
+      transform: none;
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
 
     .toolbar-chip .chip-dot {
@@ -951,16 +1000,15 @@
 </head>
 <body>
 <main>
-<div id="map"></div>
 
 <nav class="toolbar" id="toolbar">
   <a href="/" class="toolbar-title">SL Live Map <span class="toolbar-sub">Realtidspositioner i Stockholm</span></a>
   <div class="toolbar-chips" id="toolbar-chips">
-    <span class="toolbar-chip" data-layer="metro"><span class="chip-dot" style="background:#00a651"></span>T-bana</span>
-    <span class="toolbar-chip" data-layer="train"><span class="chip-dot" style="background:#8e44ad"></span>Pendeltåg</span>
-    <span class="toolbar-chip" data-layer="tram"><span class="chip-dot" style="background:#1a5276"></span>Spårvagn</span>
-    <span class="toolbar-chip" data-layer="ship"><span class="chip-dot" style="background:#00b4d8"></span>Båtar</span>
-    <span class="toolbar-chip" data-layer="bus"><span class="chip-dot" style="background:#e3000b"></span>Bussar</span>
+    <button type="button" class="toolbar-chip" data-layer="metro" aria-pressed="true"><span class="chip-dot" style="background:#00a651"></span>T-bana</button>
+    <button type="button" class="toolbar-chip" data-layer="train" aria-pressed="true"><span class="chip-dot" style="background:#8e44ad"></span>Pendeltåg</button>
+    <button type="button" class="toolbar-chip" data-layer="tram" aria-pressed="true"><span class="chip-dot" style="background:#1a5276"></span>Spårvagn</button>
+    <button type="button" class="toolbar-chip" data-layer="ship" aria-pressed="true"><span class="chip-dot" style="background:#00b4d8"></span>Båtar</button>
+    <button type="button" class="toolbar-chip" data-layer="bus" aria-pressed="true"><span class="chip-dot" style="background:#e3000b"></span>Bussar</button>
   </div>
   <div class="toolbar-nav">
     <a href="about.html" data-page="about"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 16v-4m0-4h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Om</a>
@@ -969,15 +1017,15 @@
     <a href="/screensaver.html" data-page="screensaver"><svg class="nav-icon" viewBox="0 0 24 24" fill="none"><rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 21h8m-4-4v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Skärmsläckare</a>
     <button class="theme-toggle" id="theme-toggle-desktop" aria-label="Byt tema"></button>
   </div>
-  <button class="toolbar-menu" id="toolbar-menu" aria-label="Meny">&#9776;</button>
+  <button class="toolbar-menu" id="toolbar-menu" aria-label="Meny" aria-expanded="false" aria-controls="toolbar-dropdown">&#9776;</button>
 </nav>
 <div class="toolbar-dropdown hidden" id="toolbar-dropdown">
   <div class="dropdown-chips">
-    <span class="toolbar-chip" data-layer="metro"><span class="chip-dot" style="background:#00a651"></span>T-bana</span>
-    <span class="toolbar-chip" data-layer="train"><span class="chip-dot" style="background:#8e44ad"></span>Pendeltåg</span>
-    <span class="toolbar-chip" data-layer="tram"><span class="chip-dot" style="background:#1a5276"></span>Spårvagn</span>
-    <span class="toolbar-chip" data-layer="ship"><span class="chip-dot" style="background:#00b4d8"></span>Båtar</span>
-    <span class="toolbar-chip" data-layer="bus"><span class="chip-dot" style="background:#e3000b"></span>Bussar</span>
+    <button type="button" class="toolbar-chip" data-layer="metro" aria-pressed="true"><span class="chip-dot" style="background:#00a651"></span>T-bana</button>
+    <button type="button" class="toolbar-chip" data-layer="train" aria-pressed="true"><span class="chip-dot" style="background:#8e44ad"></span>Pendeltåg</button>
+    <button type="button" class="toolbar-chip" data-layer="tram" aria-pressed="true"><span class="chip-dot" style="background:#1a5276"></span>Spårvagn</button>
+    <button type="button" class="toolbar-chip" data-layer="ship" aria-pressed="true"><span class="chip-dot" style="background:#00b4d8"></span>Båtar</button>
+    <button type="button" class="toolbar-chip" data-layer="bus" aria-pressed="true"><span class="chip-dot" style="background:#e3000b"></span>Bussar</button>
   </div>
   <div class="dropdown-divider"></div>
   <div class="dropdown-nav-grid">
@@ -999,9 +1047,12 @@
   </div>
 </div>
 
-<button class="share-btn" id="share-btn" title="Dela kartvy">&#8599;</button>
-<button class="locate-btn" id="locate-btn" title="Visa min position">&#9678;</button>
+<button class="share-btn" id="share-btn" title="Dela kartvy" aria-label="Dela kartvy">&#8599;</button>
+<button class="locate-btn" id="locate-btn" title="Visa min position" aria-label="Visa min position">&#9678;</button>
 
+<a href="#status-bar" class="skip-map" id="skip-map">Hoppa förbi kartan</a>
+<div id="map"></div>
+<div id="sr-status" class="sr-only" role="status"></div>
 <div class="status-bar" id="status-bar">
   <span><span class="count" id="vehicle-count">0</span> fordon visas<span id="visitor-count"></span> <span class="separator">&middot;</span> <span id="last-update">Laddar...</span><span data-page="credit"> <span class="separator">&middot;</span> <a href="https://gunnar.se" target="_blank" rel="noopener">gunnar.se</a></span></span>
 </div>
@@ -1200,7 +1251,7 @@ document.addEventListener('DOMContentLoaded', function() {
     attributionControl: false,
   });
 
-  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  L.control.zoom({ position: 'bottomright', zoomInTitle: 'Zooma in', zoomOutTitle: 'Zooma ut' }).addTo(map);
   // Bottom-left: the only corner with no buttons on top of it, so the
   // required basemap credit stays fully legible on mobile instead of
   // fighting the zoom/locate/share button stack in the bottom-right.
@@ -1216,6 +1267,116 @@ document.addEventListener('DOMContentLoaded', function() {
     } else {
       _lastRightClick = now;
     }
+  });
+
+  // Leaflet makes track paths focusable, without a name; vehicles and stations are what Tab should reach.
+  // Hidden from screen readers too: VoiceOver otherwise reads ~45 "image" items before the first vehicle.
+  function untabbable(e) {
+    const el = e.target.getElement();
+    if (el) {
+      el.setAttribute('tabindex', '-1');
+      el.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  // A marker reached with Tab can be off screen or under the toolbar, status bar or map credit (WCAG 2.4.11).
+  // Pan it into the clear part of the map.
+  map.getContainer().addEventListener('focusin', (e) => {
+    const el = e.target.closest && e.target.closest('.leaflet-marker-icon');
+    if (!el) return;
+    let layer = null;
+    map.eachLayer(l => { if (!layer && l.getElement && l.getElement() === el) layer = l; });
+    if (!layer || !layer.getLatLng) return;
+    const top = document.getElementById('toolbar').getBoundingClientRect().bottom;
+    // The map credit sits just above the status bar.
+    const credit = map.getContainer().querySelector('.leaflet-control-attribution');
+    const floor = Math.min(document.getElementById('status-bar').getBoundingClientRect().top,
+      credit ? credit.getBoundingClientRect().top : Infinity);
+    const bottom = window.innerHeight - floor;
+    map.panInside(layer.getLatLng(), { paddingTopLeft: [16, top + 16], paddingBottomRight: [72, bottom + 16] });
+  });
+
+  // The map container is a Tab stop (arrow keys pan it). Without a name a screen reader reads every
+  // vehicle title in it as one long string.
+  map.getContainer().setAttribute('role', 'region');
+  map.getContainer().setAttribute('aria-label', 'Karta. Piltangenterna flyttar kartan, plus och minus zoomar.');
+
+  // Skip link: focus the status bar without touching the URL hash.
+  // A press must not blur it first: unfocused it hides, and the click would land on the map below.
+  // (Safari doesn't keep links focused on mousedown; VoiceOver's VO-Space presses with the mouse.)
+  document.getElementById('skip-map').addEventListener('mousedown', (e) => e.preventDefault());
+  document.getElementById('skip-map').addEventListener('click', (e) => {
+    e.preventDefault();
+    const bar = document.getElementById('status-bar');
+    bar.setAttribute('tabindex', '-1');
+    bar.focus({ preventScroll: true });
+  });
+
+  // Screen reader announcements for things that change without moving focus (WCAG 4.1.3).
+  // Emptied first so the same text twice in a row is read again.
+  const srStatus = document.getElementById('sr-status');
+  function announce(text) {
+    srStatus.textContent = '';
+    setTimeout(() => { srStatus.textContent = text; }, 50);
+  }
+
+  // A popup opened from the keyboard or a screen reader takes focus, so a screen reader reads it and
+  // its close button is the next Tab stop. Escape closes it; focus goes back to the vehicle.
+  // VoiceOver's VO-Space sends no key event, only a click with detail 0; otherwise the popup would
+  // sit after every vehicle in the reading order.
+  let lastKeyAt = 0;
+  let openPopup = null;
+  map.getContainer().addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') lastKeyAt = Date.now();
+  }, true);
+  map.getContainer().addEventListener('click', (e) => {
+    if (e.detail === 0) lastKeyAt = Date.now();
+  }, true);
+  // While a popup holds focus, a refresh changes only the text that differs. Replacing the content
+  // on every poll threw VoiceOver's cursor back to the top of the popup every two seconds.
+  function refreshPopup(popup, html, replace) {
+    const el = popup.getElement();
+    const node = el && el.querySelector('.leaflet-popup-content');
+    if (!node || !el.contains(document.activeElement)) { replace(); return; }
+    const fresh = document.createElement('div');
+    fresh.innerHTML = html;
+    const attrs = n => n.nodeType === 1 ? [...n.attributes].map(a => a.name + '=' + a.value).join(' ') : '';
+    const a = document.createTreeWalker(node), b = document.createTreeWalker(fresh);
+    const changes = [];
+    let x = a.nextNode(), y = b.nextNode();
+    while (x && y) {
+      if (x.nodeName !== y.nodeName || attrs(x) !== attrs(y)) { replace(); return; }
+      if (x.nodeType === 3 && x.nodeValue !== y.nodeValue) changes.push([x, y.nodeValue]);
+      x = a.nextNode(); y = b.nextNode();
+    }
+    if (x || y) { replace(); return; }
+    changes.forEach(([t, v]) => { t.nodeValue = v; });
+  }
+
+  map.on('popupopen', (e) => {
+    openPopup = e.popup;
+    const el = e.popup.getElement();
+    if (!el) return;
+    const close = el.querySelector('.leaflet-popup-close-button');
+    if (close) close.setAttribute('aria-label', 'Stäng');
+    const tip = el.querySelector('.leaflet-popup-tip-container');
+    if (tip) tip.setAttribute('aria-hidden', 'true'); // VoiceOver read it as an empty "group"
+    if (Date.now() - lastKeyAt > 1000) return;
+    // The dialog is the whole popup, so its close button is inside it (VoiceOver stays in a dialog)
+    const source = e.popup._source && e.popup._source.getElement && e.popup._source.getElement();
+    el.setAttribute('tabindex', '-1');
+    el.setAttribute('role', 'dialog');
+    if (source && source.title) el.setAttribute('aria-label', source.title);
+    el.focus({ preventScroll: true });
+  });
+  map.on('popupclose', (e) => {
+    if (openPopup === e.popup) openPopup = null;
+    const el = e.popup.getElement();
+    const source = e.popup._source && e.popup._source.getElement && e.popup._source.getElement();
+    if (el && source && el.contains(document.activeElement)) source.focus({ preventScroll: true });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && openPopup) map.closePopup(openPopup);
   });
 
   if (isScreensaver) {
@@ -1375,6 +1536,7 @@ document.addEventListener('DOMContentLoaded', function() {
   function syncChips() {
     document.querySelectorAll('.toolbar-chip[data-layer]').forEach(chip => {
       chip.classList.toggle('off', !layerState[chip.dataset.layer]);
+      chip.setAttribute('aria-pressed', layerState[chip.dataset.layer] ? 'true' : 'false');
     });
   }
   syncChips();
@@ -1485,6 +1647,7 @@ document.addEventListener('DOMContentLoaded', function() {
           if (ref) {
             addTrackGeometry(ref, feature.geometry.coordinates.map(c => [c[1], c[0]]));
           }
+          layer.on('add', untabbable);
           if (layerState.metro) layer.addTo(map);
         },
       });
@@ -1523,6 +1686,7 @@ document.addEventListener('DOMContentLoaded', function() {
             addTrackGeometry(ref, feature.geometry.coordinates.map(c => [c[1], c[0]]));
           }
           tramRouteLayers.push(layer);
+          layer.on('add', untabbable);
           if (layerState.tram) layer.addTo(map);
         },
       });
@@ -1559,6 +1723,7 @@ document.addEventListener('DOMContentLoaded', function() {
             addTrackGeometry(ref, feature.geometry.coordinates.map(c => [c[1], c[0]]));
           }
           trainRouteLayers.push(layer);
+          layer.on('add', untabbable);
           if (layerState.train) layer.addTo(map);
         },
       });
@@ -1591,6 +1756,7 @@ document.addEventListener('DOMContentLoaded', function() {
         iconAnchor: [8, 8],
       });
       const marker = L.marker([s.lat, s.lon], { icon: icon });
+      marker.on('add', () => marker.getElement().setAttribute('aria-label', s.name));
       marker.bindTooltip(escapeHtml(s.name), {
         permanent: false,
         direction: 'top',
@@ -1617,6 +1783,7 @@ document.addEventListener('DOMContentLoaded', function() {
           iconAnchor: [8, 8],
         });
         const marker = L.marker([item.lat, item.lon], { icon: icon });
+        marker.on('add', () => marker.getElement().setAttribute('aria-label', item.name));
         marker.bindTooltip(escapeHtml(item.name), {
           permanent: false,
           direction: 'top',
@@ -1851,12 +2018,23 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
+  const menuButton = document.getElementById('toolbar-menu');
+  new MutationObserver(() => {
+    menuButton.setAttribute('aria-expanded', toolbarDropdown.classList.contains('hidden') ? 'false' : 'true');
+  }).observe(toolbarDropdown, { attributes: true, attributeFilter: ['class'] });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || toolbarDropdown.classList.contains('hidden')) return;
+    const wasInside = toolbarDropdown.contains(document.activeElement);
+    toolbarDropdown.classList.add('hidden');
+    if (wasInside || document.activeElement === menuButton) menuButton.focus();
+  });
+
   // =========================================================================
-  // Debug mode toggle (d key)
+  // Debug mode toggle (Alt+D; a bare letter would be a single-key shortcut, WCAG 2.1.4)
   // =========================================================================
 
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'd') return;
+    if (e.code !== 'KeyD' || !e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
     debugMode = !debugMode;
     console.log('[debug]', debugMode ? 'på' : 'av');
@@ -1887,6 +2065,7 @@ document.addEventListener('DOMContentLoaded', function() {
       navigator.share({ title: 'SL Live Map', text: 'Realtidskarta \u00f6ver SL-fordon i Stockholm', url: shareUrl }).catch(function() {});
     } else {
       navigator.clipboard.writeText(shareUrl).then(function() {
+        announce('Länken till kartvyn är kopierad');
         if (feedbackEl) {
           feedbackEl.classList.add('copied');
           feedbackEl.textContent = '\u2713';
@@ -2328,7 +2507,8 @@ document.addEventListener('DOMContentLoaded', function() {
           // update() re-invokes the content function bound at creation.
           // setPopupContent(string) would replace that function, so a popup
           // closed and reopened later would show whatever was frozen in.
-          entry.marker.getPopup().update();
+          const popup = entry.marker.getPopup();
+          refreshPopup(popup, buildPopup(entry.data, entry.category), () => popup.update());
         }
       } else {
         // ---- Create new marker ----

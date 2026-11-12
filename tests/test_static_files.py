@@ -193,12 +193,24 @@ class TestStaticFileSecurity:
         assert resp.status_code == 200
         assert resp.data == b"public"
 
-    @pytest.mark.parametrize("name", ["installer.exe", "stasis.scr"])
-    def test_windows_binaries_not_served(self, static_client, tmp_path, name):
-        """Nothing links to Windows builds any more; don't serve stray ones."""
+    @pytest.mark.parametrize("name", ["installer.exe", "stasis.scr", "screensaver/windows/publish/SL-Live-Map.scr",
+                                      "downloads/installer.exe"])
+    def test_stray_windows_binaries_not_served(self, static_client, tmp_path, name):
+        """Only the screensaver in downloads/ is offered; other Windows builds stay private."""
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_bytes(b"MZ")
         resp = static_client.get(f"/{name}")
         assert resp.status_code == 404
+
+    def test_windows_screensaver_download_served(self, static_client, tmp_path):
+        """screensaver.html links /downloads/SL-Live-Map.scr. Dropping .scr from the
+        allowlist on 2026-10-12 broke that download for a month."""
+        (tmp_path / "downloads").mkdir()
+        (tmp_path / "downloads" / "SL-Live-Map.scr").write_bytes(b"MZ")
+        resp = static_client.get("/downloads/SL-Live-Map.scr")
+        assert resp.status_code == 200
+        assert resp.data == b"MZ"
+        assert resp.headers["Content-Disposition"] == "attachment; filename=SL-Live-Map.scr"
 
 
 class TestClientIp:

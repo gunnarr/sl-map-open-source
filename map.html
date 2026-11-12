@@ -1564,6 +1564,10 @@ document.addEventListener('DOMContentLoaded', function() {
     '172','173','175','176','177','178','179',
     '471','474','670','676','677','873','875',
   ]);
+  // A letter variant of a blue line (676X, 176X) runs with the same blue buses.
+  function isBlueBusLine(desig) {
+    return BLUE_BUS_LINES.has(desig) || BLUE_BUS_LINES.has(String(desig).replace(/^(\d+)[A-Z]$/, '$1'));
+  }
 
   const TRAM_NAMES = {
     '7': 'Spårväg City',
@@ -1615,7 +1619,7 @@ document.addEventListener('DOMContentLoaded', function() {
       return { type: 'ship', group: null, color: SHIP_COLOR, designation: desig };
     }
 
-    const busColor = BLUE_BUS_LINES.has(desig) ? BLUE_BUS_COLOR : BUS_COLOR;
+    const busColor = isBlueBusLine(desig) ? BLUE_BUS_COLOR : BUS_COLOR;
     return { type: 'bus', group: null, color: busColor, designation: desig };
   }
 
@@ -2327,6 +2331,34 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
 
+  function vehicleLabel(v, category) {
+    const typeLabels = { metro: 'Tunnelbana', train: 'Pendeltåg', ship: 'Båt', bus: 'Buss' };
+    const tl = category.type === 'tram' ? (TRAM_NAMES[category.designation] || 'Spårväg') : (typeLabels[category.type] || 'Buss');
+    return `${tl} ${category.designation} ${destinationText(v).text}`;
+  }
+
+  // A bus keeps its vehicle id when it starts its next trip, often on another line.
+  // The title (hover text and screen reader name) was set once, when the marker was created,
+  // so it kept naming the first line while the popup showed the current one.
+  function syncVehicleMarker(entry, prev, v) {
+    const c = entry.category;
+    const label = vehicleLabel(v, c);
+    const iconChanged = prev.type !== c.type || prev.designation !== c.designation || prev.color !== c.color;
+    if (entry.marker.options.title !== label) {
+      entry.marker.options.title = label;
+      entry.marker.options.alt = label;
+      const el = entry.marker.getElement();
+      if (el) el.title = label;
+    }
+    if (iconChanged) {
+      // New DOM element from setIcon; it takes its title from options, set above
+      entry.marker.setIcon(createDotIcon(c.designation, c.color, c.type));
+      entry.marker.unbindTooltip();
+      const el = entry.marker.getElement();
+      if (el) el.setAttribute('data-vid', v.id);
+    }
+  }
+
   function createVehicleMarker(latlng, category, ariaLabel) {
     return L.marker(latlng, {
       icon: createDotIcon(category.designation, category.color, category.type),
@@ -2385,6 +2417,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const prevTimestamp = entry.data?.timestamp || 0;
         entry.category = category;
         entry.data = v;
+        // Before the position checks: they can skip the rest of this update
+        syncVehicleMarker(entry, prevCategory, v);
 
         // Only update when actual server position changed (skip cache duplicates)
         const posChanged = v.lat !== entry.lastLat || v.lon !== entry.lastLon;
@@ -2494,15 +2528,6 @@ document.addEventListener('DOMContentLoaded', function() {
           if (map.hasLayer(entry.marker)) map.removeLayer(entry.marker);
         }
 
-        // Only update icon if type, designation or color actually changed
-        if (prevCategory.type !== category.type || prevCategory.designation !== category.designation || prevCategory.color !== category.color) {
-          entry.marker.setIcon(createDotIcon(category.designation, category.color, category.type));
-
-          entry.marker.unbindTooltip();
-
-          // New DOM element from setIcon — no transition needed, JS animation handles it
-        }
-
         if (entry.marker.isPopupOpen()) {
           // update() re-invokes the content function bound at creation.
           // setPopupContent(string) would replace that function, so a popup
@@ -2526,10 +2551,7 @@ document.addEventListener('DOMContentLoaded', function() {
           }
         }
 
-        const _typeLabels = { metro: 'Tunnelbana', train: 'Pendeltåg', ship: 'Båt', bus: 'Buss' };
-        const _tl = category.type === 'tram' ? (TRAM_NAMES[category.designation] || 'Spårväg') : (_typeLabels[category.type] || 'Buss');
-        const destLabel = destinationText(v).text;
-        const ariaLabel = `${_tl} ${category.designation} ${destLabel}`;
+        const ariaLabel = vehicleLabel(v, category);
         const marker = createVehicleMarker([initLat, initLon], category, ariaLabel);
 
         // Popup formatting (notably locale-aware time formatting) is wasted

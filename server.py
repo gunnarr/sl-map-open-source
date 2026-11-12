@@ -1034,10 +1034,15 @@ def static_files(filename):
     if ext == ".txt":
         if not PUBLIC_TEXT_FILE.fullmatch(filename):
             return "Not found", 404
+    elif ext == ".scr":
+        # The Windows screensaver that screensaver.html offers. Only from downloads/,
+        # so a stray Windows build elsewhere in the tree is never served.
+        if not filename.startswith("downloads/"):
+            return "Not found", 404
     elif ext not in ALLOWED_STATIC_EXT:
         return "Not found", 404
     resp = make_response(send_from_directory(str(_asset_dir(filename)), filename))
-    if ext == ".pkg":
+    if ext in {".pkg", ".scr"}:
         resp.headers["Cache-Control"] = "public, max-age=86400"
         resp.headers["Content-Disposition"] = f"attachment; filename={os.path.basename(filename)}"
     elif ext in {".geojson", ".json", ".jpg", ".png", ".webp", ".ico", ".svg", ".m4a"}:

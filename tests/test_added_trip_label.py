@@ -142,4 +142,9 @@ class TestClientLabelsMissingDestination:
         html = self._map()
         aria = html[html.index("const ariaLabel ="):]
         aria = aria[:aria.index("\n")]
-        assert "destLabel" in aria
+        assert "vehicleLabel(" in aria
+        # vehicleLabel also renames a marker whose vehicle starts a new trip
+        fn = html[html.index("function vehicleLabel("):]
+        fn = fn[:fn.index("\n  }")]
+        assert "destinationText(v).text" in fn
+        assert "syncVehicleMarker(entry, prevCategory, v)" in html

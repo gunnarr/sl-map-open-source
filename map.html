@@ -1142,7 +1142,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const _SS_STOP_S = 10;
     const _SS_RESUME_TICKS = 3;
     const _SS_RESUME_GAP_S = 20;       // bounds the cost if frames come and go
-    const _ssReporting = true;         // on while the leak is being measured
+    // ?ssdiag=1 sends the watch events to /api/screensaver-watch, which only
+    // sl-map.gunnar.se has. Off by default since the leak was measured (Nov 2026).
+    const _ssReporting = params.has('ssdiag');
     const _ssId = (window.crypto && crypto.randomUUID)
       ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
     const _ssBorn = Date.now();

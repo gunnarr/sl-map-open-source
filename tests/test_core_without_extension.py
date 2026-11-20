@@ -29,7 +29,7 @@ out = {
         "/nyheter", "/feed.xml", "/lgtv", "/api/stats", "/api/greetings",
         "/api/screensaver-stats")},
     "post": {p: c.post(p, json={}).status_code for p in (
-        "/api/greeting", "/api/subscribe", "/api/screensaver-diag",
+        "/api/greeting", "/api/subscribe", "/api/screensaver-diag", "/api/screensaver-watch",
         "/api/send-screensaver-instructions")},
 }
 print(json.dumps(out))

@@ -63,6 +63,9 @@
         l.rel = 'preconnect'; l.href = o;
         head.appendChild(l);
       });
+      var otherView = /[?&](lat|lon|zoom)=/.test(location.search);
+      try { otherView = otherView || (!screensaver && !!localStorage.getItem('view')); } catch (e) {}
+      if (otherView) return;
       (t.preload || []).forEach(function (c) {
         // No crossorigin: match Leaflet's no-CORS image requests so the
         // preloaded response is reused instead of downloaded twice.
@@ -401,6 +404,18 @@
     }
 
     .toolbar-menu:hover { color: var(--text-primary); }
+    .toolbar-menu { position: relative; }
+    .toolbar-menu.has-filter::after {
+      content: '';
+      position: absolute;
+      top: 6px;
+      right: 2px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #fbbf24;
+      border: 1.5px solid var(--bg-body);
+    }
 
     /* ---- Toolbar dropdown ---- */
     .toolbar-dropdown {
@@ -664,6 +679,10 @@
 
     /* ---- Vehicle dot markers ---- */
     .veh-dot {
+      /* Fill the icon box: without a height the dot sat at the top of the
+         24px touch box, 8px (bus) or 5px (rail) north of its position. */
+      width: 100%;
+      height: 100%;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1077,166 +1096,341 @@ document.addEventListener('DOMContentLoaded', function() {
 
   const params = new URLSearchParams(window.location.search);
   const isScreensaver = params.has('screensaver');
-  const startLat = parseFloat(params.get('lat')) || 59.33;
-  const startLon = parseFloat(params.get('lon')) || 18.07;
-  const startZoom = parseInt(params.get('zoom')) || 13;
+  const DEFAULT_VIEW = { lat: 59.33, lon: 18.07, zoom: 13 };
+  // Most visits are a half-minute look at the same place as last time, so the
+  // map opens where the visitor left it. A link with a position wins, and a
+  // screensaver always shows the default view.
+  const VIEW_KEY = 'view', LAYERS_KEY = 'layers';
+  const VIEW_MAX_KM = 150;   // further from the default centre than this is not kept
+  function readSavedView() {
+    try {
+      const v = JSON.parse(localStorage.getItem(VIEW_KEY));
+      if (v && isFinite(v.lat) && isFinite(v.lon) && isFinite(v.zoom) && v.zoom >= 8 && v.zoom <= 19 &&
+          Math.abs(v.lat - DEFAULT_VIEW.lat) < 2 && Math.abs(v.lon - DEFAULT_VIEW.lon) < 4) return v;
+    } catch (e) { /* no storage, or not ours */ }
+    return null;
+  }
+  const hasViewParams = params.has('lat') || params.has('lon') || params.has('zoom');
+  const savedView = (params.has('screensaver') || hasViewParams) ? null : readSavedView();
+  const startLat = parseFloat(params.get('lat')) || (savedView ? savedView.lat : DEFAULT_VIEW.lat);
+  const startLon = parseFloat(params.get('lon')) || (savedView ? savedView.lon : DEFAULT_VIEW.lon);
+  const startZoom = parseInt(params.get('zoom')) || (savedView ? savedView.zoom : DEFAULT_VIEW.zoom);
   let debugMode = params.has('debug');
+  // Screensaver mode replaces these: whether polling may run right now, and
+  // whether init() has started it.
+  let ssMayPoll = () => true;
+  let ssReady = false;
+  // Screensaver mode: the page that polls passes each answer on to the others.
+  let ssShareOut = null;
 
   if (isScreensaver) {
     document.body.classList.add('screensaver');
     plausible('Screensaver Active');
 
 
-    // --- Screensaver rAF watchdog v4 ---
-    // When rAF is throttled to >150ms avg over 300 frames, screensaver is
-    // backgrounded (leaked WKWebView) — stop polling. Resume when rAF returns
-    // to <50ms avg. 3-tick hysteresis (~6 min) prevents jitter oscillation.
-    // v3 (30/50ms, per-rAF) burned us — top IP did 87 transitions in 10 min.
-    // ?fasttest=1 → hysteresis=1, interval=5s, window=60 frames (~1s @ 60fps)
-    // Used by Puppeteer/manual local end-to-end tests. No-op in real use.
-    const _diagFast = params.has('fasttest');
-    // Telemetry is opt-in. Every screensaver instance posted a heartbeat every
-    // 120s, which came to ~79k requests/day — 64% of everything reaching
-    // Gunicorn — for an investigation nobody reads day to day. Only the
-    // reporting call is gated: the rAF state machine, the 4h cutoff and the
-    // visibilitychange polling control all still run exactly as before.
-    // ?ssdiag=1 turns collection back on when the leak work resumes.
-    const _diagReporting = _diagFast || params.has('ssdiag');
-    const _diagId = crypto.randomUUID();
-    let _diagState = 'unknown';        // committed: 'unknown' | 'active' | 'throttled'
-    let _diagLastFrame = 0;
-    let _diagFrameTimes = [];          // rolling window of frame deltas
-    const _DIAG_WINDOW = _diagFast ? 60 : 300;     // ~1s vs ~5s @ 60fps
-    const _ACTIVE_THRESHOLD = 50;      // ms
-    const _THROTTLED_THRESHOLD = 150;  // ms
-    const _HYSTERESIS = _diagFast ? 1 : 3;
-    let _diagCandidate = null;
-    let _diagCandidateCount = 0;
+    // --- Display watch ---
+    // macOS can stop showing a screensaver's web view without unloading it, and
+    // the page then keeps polling for hours (several instances per Mac). Such a
+    // page still runs timers but gets no animation frames, so polling follows
+    // the frames: it stops after _SS_STOP_S without one and resumes when they
+    // have been steady for _SS_RESUME_TICKS seconds. The earlier attempt
+    // compared average frame times, which never change when frames stop.
+    // ?fasttest=1 shortens the cutoff for the native leak harness.
+    const _ssFast = params.has('fasttest');
+    // ?ssgate=observe reports what the watch would do without stopping anything.
+    const _SS_ENFORCE = params.has('ssgate') ? params.get('ssgate') === 'enforce' : true;
+    const _SS_STOP_S = 10;
+    const _SS_RESUME_TICKS = 3;
+    const _SS_RESUME_GAP_S = 20;       // bounds the cost if frames come and go
+    const _ssReporting = true;         // on while the leak is being measured
+    const _ssId = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const _ssBorn = Date.now();
+    // The native code overrides document.visibilityState on the instance; the
+    // prototype getter still tells the truth. Reported, not acted on.
+    const _ssRealVis = (Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState') || {}).get;
 
-    function _diagReport(ev) {
-      if (!_diagReporting) return;
-      const avg = _diagFrameTimes.length
-        ? _diagFrameTimes.reduce((a, b) => a + b, 0) / _diagFrameTimes.length : 0;
-      const min = _diagFrameTimes.length ? Math.min(..._diagFrameTimes) : 0;
-      const max = _diagFrameTimes.length ? Math.max(..._diagFrameTimes) : 0;
-      fetch('/api/screensaver-diag', {
+    let _ssFrames = 0, _ssTickFrames = 0;
+    let _ssLastFrame = performance.now(), _ssLastTick = performance.now();
+    let _ssShown = true, _ssLiveTicks = 0, _ssStoppedAt = 0, _ssFlips = 0;
+    let _ssCut = false, _ssOccluded = false, _ssHidden = false;
+    let _ssShownPollS = 0, _ssDarkPollS = 0, _ssSupersededAt = 0;
+
+    // --- Shared polling ---
+    // Several screensaver pages can be drawn on one computer at once: one per
+    // display, and macOS keeps drawing pages from earlier runs. They share one
+    // poller. The page that holds a Web Lock polls and passes each answer to
+    // the others over a BroadcastChannel; they show it without asking the
+    // server. A page that hears no poller polls for itself, so if any of this
+    // fails the result is what it was before: every page polls.
+    // ?ssshare=0 turns it off.
+    const _SS_SILENCE_MS = 12000;      // one poll interval plus one request timeout, and a little
+    let _ssShare = params.get('ssshare') !== '0'
+      && !!(navigator.locks && window.BroadcastChannel && window.AbortController);
+    let _ssShareCh = null;
+    let _ssLeader = false, _ssSeeking = null, _ssRelease = null;
+    let _ssHeardAt = -Infinity;        // last answer heard from the poller
+    let _ssTookAt = -Infinity;         // last answer from the poller shown here
+    let _ssNeedAll = true;             // the next answer must be a whole picture
+    let _ssAskedAt = -Infinity;        // last time another page asked for answers
+    let _ssSentAllAt = -Infinity;
+    let _ssTaken = 0, _ssLeadS = 0, _ssFollowS = 0, _ssSelfS = 0, _ssTicks = 0;
+    let _ssVersionTimer = null;
+    let _ssQueue = [], _ssTaking = false;
+    const _ssFollowing = () => performance.now() - _ssTookAt < 30000;
+    const _ssVisitors = () => document.getElementById('visitor-count').textContent;
+
+    function _ssFrame() {
+      _ssFrames++; _ssTickFrames++; _ssLastFrame = performance.now();
+      requestAnimationFrame(_ssFrame);
+    }
+    requestAnimationFrame(_ssFrame);
+
+    const _ssIsPolling = () => _vehicleInterval !== null;
+    const _ssDrawn = () => !_ssCut && !_ssOccluded && !_ssHidden && (!_SS_ENFORCE || _ssShown);
+    ssMayPoll = () => _ssDrawn()
+      && (!_ssShare || _ssLeader || performance.now() - _ssHeardAt > _SS_SILENCE_MS);
+
+    function _ssReport(ev) {
+      if (!_ssReporting) return;
+      const now = performance.now();
+      let rv = '?';
+      try { rv = _ssRealVis.call(document) === 'hidden' ? 'h' : 'v'; } catch (e) {}
+      fetch('/api/screensaver-watch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: _diagId, transition: ev, state: _diagState,
-          rafAvg: avg, rafMin: min, rafMax: max,
-          samples: _diagFrameTimes.length,
-          docHidden: document.hidden,
-          visState: document.visibilityState,
-          candidate: _diagCandidate,
-          candidateCount: _diagCandidateCount
+          id: _ssId, ev: ev, enf: _SS_ENFORCE ? 1 : 0,
+          age: Math.round(now / 1000), fr: _ssFrames,
+          sf: Math.round((now - _ssLastFrame) / 1000), rv: rv,
+          poll: ssReady && _ssIsPolling() ? 1 : 0, shown: _ssShown ? 1 : 0,
+          flips: _ssFlips, sp: Math.round(_ssShownPollS), dp: Math.round(_ssDarkPollS),
+          sup: _ssSupersededAt ? Math.round((now - _ssSupersededAt) / 1000) : -1,
+          sh: _ssShare ? 1 : 0, ld: _ssLeader ? 1 : 0, tk: _ssTaken,
+          ls: Math.round(_ssLeadS), fs: Math.round(_ssFollowS), ss: Math.round(_ssSelfS)
         })
       }).catch(() => {});
     }
 
-    function _diagFrameTick(ts) {
-      if (_diagLastFrame) {
-        const dt = ts - _diagLastFrame;
-        _diagFrameTimes.push(dt);
-        if (_diagFrameTimes.length > _DIAG_WINDOW) _diagFrameTimes.shift();
+    // Level-triggered: whatever started or stopped polling, put it where it
+    // should be. Before init() has started polling there is nothing to do.
+    function _ssApply() {
+      if (_ssShare) { if (_ssDrawn()) _ssSeek(); else _ssYield(); }
+      if (!ssReady) return;
+      const want = ssMayPoll();
+      if (want && !_ssIsPolling()) {
+        // A page that was just showing the poller's answers is up to date and
+        // carries on from there; any other starts over with a full fetch.
+        if (performance.now() - _ssTookAt < 6000) startPolling(); else resumePolling();
+      } else if (!want && _ssIsPolling()) {
+        stopPolling();
       }
-      _diagLastFrame = ts;
-      requestAnimationFrame(_diagFrameTick);
-    }
-    requestAnimationFrame(_diagFrameTick);
-
-    function _classifyAvg(avg) {
-      if (avg < _ACTIVE_THRESHOLD) return 'active';
-      if (avg > _THROTTLED_THRESHOLD) return 'throttled';
-      return null; // fuzzy
-    }
-
-    function _diagEvaluate() {
-      if (_diagFrameTimes.length < _DIAG_WINDOW) {
-        _diagReport('heartbeat');
-        return;
+      // A page that only listens still has to notice a new version.
+      const listening = _ssShare && _ssDrawn() && !_ssIsPolling();
+      if (listening && !_ssVersionTimer) {
+        _ssVersionTimer = setInterval(checkVersion, 60000);
+      } else if (!listening && _ssVersionTimer) {
+        clearInterval(_ssVersionTimer); _ssVersionTimer = null;
       }
-      const avg = _diagFrameTimes.reduce((a, b) => a + b, 0) / _diagFrameTimes.length;
-      const candidate = _classifyAvg(avg);
+    }
 
-      if (candidate === null || candidate === _diagState) {
-        _diagCandidate = null;
-        _diagCandidateCount = 0;
-      } else if (candidate === _diagCandidate) {
-        _diagCandidateCount++;
-        if (_diagCandidateCount >= _HYSTERESIS) {
-          _diagState = candidate;
-          _diagCandidate = null;
-          _diagCandidateCount = 0;
-          _diagReport('became_' + candidate);
-          // Note: previously called stop/startPolling here. Removed because:
-          // (1) rAF doesn't actually throttle in WKWebView (occlusion detection
-          //     is intentionally disabled — required for the map to render),
-          // (2) Path A's 4h cutoff is the actual leak fix, and v4 'became_active'
-          //     would race with it and re-start polling after cutoff. v4 stays
-          //     as observability only.
-          return;
+    // The lock decides which page passes its answers on. It is asked for only
+    // while the page is drawn and given back as soon as it is not, so a page
+    // macOS has stopped showing never stands in the way of one that is shown.
+    function _ssSeek() {
+      if (_ssLeader || _ssSeeking) return;
+      const ctl = new AbortController();
+      _ssSeeking = ctl;
+      try {
+        navigator.locks.request('sl-screensaver-poll', { signal: ctl.signal }, () => {
+          if (_ssSeeking !== ctl) return undefined;      // given up in the meantime
+          _ssSeeking = null;
+          _ssLeader = true;
+          _ssApply();
+          return new Promise(resolve => { _ssRelease = resolve; });
+        }).catch((e) => {
+          if (_ssSeeking === ctl) _ssSeeking = null;
+          if (!e || e.name !== 'AbortError') _ssShare = false;   // locks do not work here
+        });
+      } catch (e) {
+        _ssSeeking = null;
+        _ssShare = false;
+      }
+    }
+
+    function _ssYield() {
+      if (_ssSeeking) { const ctl = _ssSeeking; _ssSeeking = null; ctl.abort(); }
+      if (_ssLeader) {
+        _ssLeader = false;
+        const release = _ssRelease; _ssRelease = null;
+        if (release) release();
+      }
+    }
+
+    // Show an answer that the polling page passed on. A delta only fits if it
+    // was made against a picture no newer than the one shown here; the server
+    // builds deltas the same way (an older base gives a superset).
+    // Answers are shown one at a time and in order; a page that falls behind
+    // asks for a whole picture instead of working through a backlog.
+    function _ssTake(m) {
+      if (m.d && m.d.vehicles) _ssQueue = [];
+      _ssQueue.push(m);
+      if (_ssQueue.length > 4) { _ssQueue = []; _ssNeedAll = true; return; }
+      if (!_ssTaking) _ssTakeQueued();
+    }
+
+    async function _ssTakeQueued() {
+      _ssTaking = true;
+      try {
+        while (_ssQueue.length) {
+          const m = _ssQueue.shift();
+          if (_ssLeader || !_ssShare || !_ssDrawn()) { _ssQueue = []; break; }
+          const whole = !!(m.d && m.d.vehicles);
+          const fits = whole || (_lastVehicleTs && m.since && m.since <= _lastVehicleTs);
+          if (!fits || _vehicleInFlight) { _ssQueue = []; _ssNeedAll = true; break; }
+          _ssNeedAll = false;
+          if (performance.now() - _ssTookAt > 10000) _placeDirectly = true;   // no long glide from old positions
+          _ssTookAt = performance.now();
+          _ssTaken++;
+          // The visitor count in the status bar comes along: a listening page does not fetch it.
+          if (typeof m.vis === 'string') document.getElementById('visitor-count').textContent = m.vis;
+          await fetchVehicles(Promise.resolve({ ok: true, json: () => Promise.resolve(m.d) }));
+        }
+      } finally {
+        _ssTaking = false;
+      }
+    }
+
+    if (_ssShare) {
+      try {
+        _ssShareCh = new BroadcastChannel('sl-screensaver-share');
+        _ssShareCh.onmessage = (e) => {
+          const m = e.data;
+          if (!m) return;
+          if (m.k === 'w') {
+            // Another page is drawn and wants answers.
+            if (!_ssLeader) return;
+            _ssAskedAt = performance.now();
+            if (m.all && ssReady && _lastVehicleTs && performance.now() - _ssSentAllAt > 3000) {
+              _ssSentAllAt = performance.now();
+              _ssShareCh.postMessage({ k: 'd', since: 0, vis: _ssVisitors(),
+                d: { vehicles: Object.values(_vehicleMap), timestamp: _lastVehicleTs } });
+            }
+          } else if (m.k === 'd') {
+            if (_ssLeader || !_ssShare) return;
+            _ssHeardAt = performance.now();
+            if (!ssReady || !_ssDrawn()) return;
+            _ssApply();          // stops this page's own polling if it had begun
+            _ssTake(m);
+          }
+        };
+        ssShareOut = (data, since) => {
+          if (!_ssLeader || data.error || performance.now() - _ssAskedAt > 6000) return;
+          try {
+            _ssShareCh.postMessage({ k: 'd', since: data.vehicles ? 0 : (since || 0), vis: _ssVisitors(), d: data });
+          } catch (e) { /* the page keeps polling for itself; the others notice the silence */ }
+        };
+      } catch (e) {
+        _ssShare = false;
+      }
+    }
+
+    function _ssTick() {
+      const now = performance.now();
+      const dt = (now - _ssLastTick) / 1000;
+      _ssLastTick = now;
+      const frames = _ssTickFrames;
+      _ssTickFrames = 0;
+      if (ssReady && _ssIsPolling()) {
+        if (_ssShown) _ssShownPollS += dt; else _ssDarkPollS += dt;
+        if (_ssLeader) _ssLeadS += dt; else if (_ssShare) _ssSelfS += dt;
+      } else if (ssReady && now - _ssTookAt < 6000) {
+        _ssFollowS += dt;
+      }
+      // Tell the polling page that this one is drawn and listening: at once
+      // when a whole picture is needed, otherwise every other second.
+      _ssTicks++;
+      if (_ssShare && _ssShareCh && ssReady && !_ssLeader && _ssDrawn() && (_ssNeedAll || _ssTicks % 2 === 0)) {
+        try { _ssShareCh.postMessage({ k: 'w', all: _ssNeedAll }); } catch (e) {}
+      }
+      if (_ssShown) {
+        if (now - _ssLastFrame > _SS_STOP_S * 1000) {
+          _ssShown = false; _ssLiveTicks = 0; _ssStoppedAt = now; _ssFlips++;
+          _ssReport('stop');
         }
       } else {
-        _diagCandidate = candidate;
-        _diagCandidateCount = 1;
+        _ssLiveTicks = frames >= 2 ? _ssLiveTicks + 1 : 0;
+        if (_ssLiveTicks >= _SS_RESUME_TICKS && now - _ssStoppedAt > _SS_RESUME_GAP_S * 1000) {
+          _ssShown = true; _ssFlips++;
+          _ssReport('resume');
+        }
       }
-      _diagReport('heartbeat');
+      _ssApply();
     }
+    setInterval(_ssTick, 1000);
 
-    setInterval(_diagEvaluate, _diagFast ? 5000 : 120000);
+    // What the watch saw at the start, then a line every ten minutes for as
+    // long as the page polls or shows another page's answers. A page that is
+    // not drawn stays quiet.
+    setTimeout(() => _ssReport('start'), 20000);
+    setInterval(() => { if (ssReady && (_ssIsPolling() || _ssFollowing())) _ssReport('beat'); }, 600000);
 
-    // Path B: standard Page Visibility API. Once Swift stops overriding
-    // document.hidden, this becomes the primary leak fix — visibilitychange
-    // fires when the screensaver window is occluded/un-occluded by macOS.
+    // A later screensaver run announces itself to the pages an earlier run left
+    // behind. Reported only: whether such pages still get frames decides if
+    // this is needed on top of the frame rule.
+    try {
+      const ch = new BroadcastChannel('sl-screensaver');
+      ch.onmessage = (e) => {
+        if (!_ssSupersededAt && e.data && e.data.born > _ssBorn + 15000) {
+          _ssSupersededAt = performance.now();
+          _ssReport('sup');
+        }
+      };
+      ch.postMessage({ born: _ssBorn });
+    } catch (e) { /* no BroadcastChannel: nothing to report */ }
+
+    // Standard Page Visibility API: what stops a screensaver that runs in an
+    // ordinary browser or in WebView2. The native Mac code overrides
+    // document.hidden, so there this never reads true.
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        _diagReport('vischange_hidden');
-        stopPolling();
-      } else {
-        _diagReport('vischange_visible');
-        startPolling();
-      }
+      _ssHidden = !!document.hidden;
+      _ssApply();
     });
 
-    // Path A: hard 4h cutoff as guaranteed upper bound. Real screensaver
-    // sessions are rarely > 4h; anything longer is almost certainly leaked.
-    // ?fasttest=1 → 3s for headless verification.
-    const _ssCutoffMs = _diagFast ? 3000 : 4 * 60 * 60 * 1000;
-    _diagReport('cutoff_scheduled');
+    // Hard 4 h cutoff as a guaranteed upper bound. Real screensaver sessions
+    // are rarely longer; nothing restarts polling after it.
+    const _ssCutoffMs = _ssFast ? 3000 : 4 * 60 * 60 * 1000;
     setTimeout(() => {
-      _diagReport('cutoff_firing');
-      try {
-        stopPolling();
-        _diagReport('cutoff_stopped_ok');
-      } catch (e) {
-        _diagReport('cutoff_error');
-      }
+      _ssCut = true;
+      _ssReport('cut');
+      try { _ssApply(); stopPolling(); } catch (e) { /* not started yet */ }
     }, _ssCutoffMs);
 
-    // Native bridge (kept as belt-and-suspenders): Swift's NSWindow occlusion
-    // observer calls this. Currently unreliable on macOS Tahoe; visibilitychange
-    // is the primary signal once Swift override is removed.
+    // Native bridge: the Mac screensaver calls this from its window occlusion
+    // observer. Unreliable on macOS Tahoe, kept as one more signal.
     window._onOccluded = function(occluded) {
-      try {
-        _diagReport(occluded ? 'occluded' : 'unoccluded');
-        if (occluded) stopPolling();
-        else startPolling();
-      } catch (e) { /* startPolling/stopPolling defined later — safe via closure */ }
+      _ssOccluded = !!occluded;
+      try { _ssApply(); } catch (e) { /* before init */ }
     };
 
-    // Test hook for headless verification (Puppeteer). No-op in real use.
-    window.__ssDiagTest = {
-      inject(opts) {
-        if ('frameTimes' in opts) _diagFrameTimes = opts.frameTimes;
-        if ('candidate'  in opts) _diagCandidate = opts.candidate;
-        if ('candidateCount' in opts) _diagCandidateCount = opts.candidateCount;
-        if ('state'      in opts) _diagState = opts.state;
-      },
-      getState: () => _diagState,
-      getCandidateCount: () => _diagCandidateCount,
-      evaluate: _diagEvaluate,
-      isPolling: () => typeof _vehicleInterval !== 'undefined' && _vehicleInterval !== null,
+    // The native leak harness counts these posts to tell that the page's
+    // script is still alive. Only with ?fasttest=1.
+    if (_ssFast) {
+      const alive = () => fetch('/api/screensaver-diag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: _ssId, transition: 'heartbeat', state: _ssShown ? 'active' : 'throttled', rafAvg: 0, samples: _ssFrames })
+      }).catch(() => {});
+      alive();
+      setInterval(alive, 3000);
+    }
+
+    // Test hook (Puppeteer). No-op in real use.
+    window.__ssWatchTest = {
+      state: () => ({ shown: _ssShown, flips: _ssFlips, frames: _ssFrames, enforce: _SS_ENFORCE,
+                      cut: _ssCut, polling: ssReady && _ssIsPolling(), superseded: !!_ssSupersededAt,
+                      share: _ssShare, leader: _ssLeader, taken: _ssTaken, needAll: _ssNeedAll,
+                      following: performance.now() - _ssTookAt < 6000, ts: _lastVehicleTs || 0 }),
     };
   }
 
@@ -1353,6 +1547,26 @@ document.addEventListener('DOMContentLoaded', function() {
     changes.forEach(([t, v]) => { t.nodeValue = v; });
   }
 
+  // Popups open clear of the toolbar and the status bar, which lie on top of
+  // the map. Leaflet reads these arrays each time it pans, so they are
+  // measured again when the window changes.
+  const POPUP_PAD_TOP_LEFT = [10, 64], POPUP_PAD_BOTTOM_RIGHT = [10, 46];
+  const VEHICLE_POPUP_OPTIONS = { autoPanPaddingTopLeft: POPUP_PAD_TOP_LEFT, autoPanPaddingBottomRight: POPUP_PAD_BOTTOM_RIGHT };
+  function measurePopupPadding() {
+    const top = document.getElementById('toolbar'), bottom = document.querySelector('.status-bar');
+    const t = top ? top.getBoundingClientRect() : null, b = bottom ? bottom.getBoundingClientRect() : null;
+    POPUP_PAD_TOP_LEFT[1] = (t && t.height ? Math.round(t.bottom) : 0) + 10;
+    POPUP_PAD_BOTTOM_RIGHT[1] = (b && b.height ? Math.round(window.innerHeight - b.top) : 0) + 10;
+  }
+  measurePopupPadding();
+  window.addEventListener('resize', measurePopupPadding);
+
+  // An open popup follows its vehicle: Leaflet pans the map on every marker
+  // move and every popup update. Once the visitor has dragged the map that
+  // would pull it straight back, so the drag switches the following off for
+  // this popup. Closing it switches it on again for the next time it opens.
+  map.on('dragstart', () => { if (openPopup) openPopup.options.autoPan = false; });
+
   map.on('popupopen', (e) => {
     openPopup = e.popup;
     const el = e.popup.getElement();
@@ -1371,6 +1585,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   map.on('popupclose', (e) => {
     if (openPopup === e.popup) openPopup = null;
+    e.popup.options.autoPan = true;
     const el = e.popup.getElement();
     const source = e.popup._source && e.popup._source.getElement && e.popup._source.getElement();
     if (el && source && el.contains(document.activeElement)) source.focus({ preventScroll: true });
@@ -1524,12 +1739,27 @@ document.addEventListener('DOMContentLoaded', function() {
     'bus': true,
   };
 
-  // Apply layers from URL parameter
+  // Apply layers from URL parameter, else the ones the visitor left on
   if (params.has('layers')) {
     const activeLayers = params.get('layers').split(',');
     for (const key of Object.keys(layerState)) {
       layerState[key] = activeLayers.includes(key);
     }
+  } else if (!isScreensaver) {
+    try {
+      const saved = (localStorage.getItem(LAYERS_KEY) || '').split(',').filter(k => k in layerState);
+      // Everything off would be an empty map with no explanation: start over.
+      if (saved.length) for (const key of Object.keys(layerState)) layerState[key] = saved.includes(key);
+    } catch (e) { /* no storage */ }
+  }
+
+  function saveLayers() {
+    if (isScreensaver) return;
+    try {
+      const on = Object.keys(layerState).filter(k => layerState[k]);
+      if (on.length === Object.keys(layerState).length) localStorage.removeItem(LAYERS_KEY);
+      else localStorage.setItem(LAYERS_KEY, on.join(','));
+    } catch (e) { /* no storage */ }
   }
 
   // Sync chip visual state with layerState
@@ -1538,6 +1768,13 @@ document.addEventListener('DOMContentLoaded', function() {
       chip.classList.toggle('off', !layerState[chip.dataset.layer]);
       chip.setAttribute('aria-pressed', layerState[chip.dataset.layer] ? 'true' : 'false');
     });
+    // On a phone the chips are inside the menu; a dot on the button says a layer is off.
+    const menu = document.getElementById('toolbar-menu');
+    const hidden = Object.keys(layerState).filter(k => !layerState[k]).length;
+    if (menu) {
+      menu.classList.toggle('has-filter', hidden > 0);
+      menu.setAttribute('aria-label', !hidden ? 'Meny' : hidden === 1 ? 'Meny, ett trafikslag dolt' : 'Meny, ' + hidden + ' trafikslag dolda');
+    }
   }
   syncChips();
 
@@ -1998,6 +2235,7 @@ document.addEventListener('DOMContentLoaded', function() {
     chip.addEventListener('click', () => {
       const layer = chip.dataset.layer;
       layerState[layer] = !layerState[layer];
+      saveLayers();
       syncChips();
       applyLayerVisibility();
       applyStationVisibility();
@@ -2099,9 +2337,18 @@ document.addEventListener('DOMContentLoaded', function() {
   const POLL_INTERVAL = 2000; // ms — matches Trafiklab's ~2s update interval
   const MAX_SPEED_MS = 50;         // 180 km/h — reject jumps faster than this (GTFS-RT ghost IDs)
   const PREDICT_AHEAD_SHIP = 3;   // seconds ahead for ship prediction
-  const PREDICT_AHEAD_RAIL = 3;   // seconds ahead for train/tram (reduced from 8 to minimize bounce)
+  const PREDICT_AHEAD_RAIL = 1.5; // seconds ahead for rail (was 3: enough when the glide is short)
   const ANIM_DURATION_DEFAULT = 2000; // ms — buses
-  const ANIM_DURATION_RAIL = 10000;   // ms — trains/trams: spread jump over longer time
+  const ANIM_DURATION_RAIL = 10000;   // ms — longest glide for rail (trams report up to minutes apart)
+  // Rail glides for 1.25 x the time since the vehicle's previous position,
+  // within 2.5-10 s. A fixed 10 s was right when trains reported every 10 s;
+  // they now report about every 4 s, so the dot never arrived and trailed
+  // its last report by a median 5 s (commuter trains) and 3 s (metro).
+  const RAIL_GLIDE_FACTOR = 1.25;
+  const RAIL_GLIDE_MIN = 2500;        // ms
+  // A new target a short way *behind* the dot is prediction overshoot (the
+  // train braked). Standing still looks right; stepping back does not.
+  const RAIL_HOLD_M = 40;
   const ANIM_DURATION_SHIP = 4000;    // ms — ships
 
   let animFrameId = null;
@@ -2118,10 +2365,19 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!animFrameId) animFrameId = requestAnimationFrame(runAnims);
   }
 
+  // Set while the first update after a pause is applied: positions are then
+  // minutes old, and gliding from them took 2 s for buses and 10 s for trains.
+  let _placeDirectly = false;
+
   function moveVehicleMarker(marker, toLat, toLng, duration, snapCoords) {
     // Animating markers far outside the viewport wastes a requestAnimationFrame
     // update on every vehicle for every frame. Keep offscreen state current,
     // but only animate markers that the user can actually see.
+    if (_placeDirectly) {
+      anims = anims.filter(a => a.marker !== marker);
+      marker.setLatLng([toLat, toLng]);
+      return;
+    }
     if (map.hasLayer(marker)) {
       animateMarker(marker, toLat, toLng, duration, snapCoords);
     } else {
@@ -2506,7 +2762,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
               }
             }
-            moveVehicleMarker(entry.marker, targetLat, targetLon, ANIM_DURATION_RAIL, coords);
+            const sinceLast = (Date.now() / 1000 - (entry.lastUpdateTime || 0)) * 1000;
+            const glide = Math.max(RAIL_GLIDE_MIN, Math.min(ANIM_DURATION_RAIL, sinceLast * RAIL_GLIDE_FACTOR));
+            let hold = false;
+            if (entry.lastBearing != null && !_placeDirectly) {
+              const shown = entry.marker.getLatLng();
+              const dist = haversineM(shown.lat, shown.lng, targetLat, targetLon);
+              if (dist > 0.5 && dist < RAIL_HOLD_M) {
+                let off = Math.abs(calcBearing(shown.lat, shown.lng, targetLat, targetLon) - entry.lastBearing);
+                if (off > 180) off = 360 - off;
+                hold = off > 90;
+              }
+            }
+            if (!hold) moveVehicleMarker(entry.marker, targetLat, targetLon, glide, coords);
           } else {
             // Buses update every ~2s — short animation matches update rate
             moveVehicleMarker(entry.marker, targetLat, targetLon);
@@ -2559,7 +2827,7 @@ document.addEventListener('DOMContentLoaded', function() {
         marker.bindPopup(() => {
           const current = vehicleMarkers[v.id];
           return buildPopup(current ? current.data : v, current ? current.category : category);
-        });
+        }, VEHICLE_POPUP_OPTIONS);
         marker.on('popupopen', () => {
           const current = vehicleMarkers[v.id];
           const currentCategory = current ? current.category : category;
@@ -2756,6 +3024,21 @@ document.addEventListener('DOMContentLoaded', function() {
   // permanently mounted elements on a typical full feed.
   map.on('moveend', applyLayerVisibility);
 
+  // Remember where the visitor left the map (see readSavedView).
+  let _viewSaveTimer = null;
+  function saveView() {
+    if (isScreensaver) return;
+    clearTimeout(_viewSaveTimer);
+    _viewSaveTimer = setTimeout(() => {
+      try {
+        const c = map.getCenter(), z = map.getZoom();
+        if (map.distance(c, [DEFAULT_VIEW.lat, DEFAULT_VIEW.lon]) > VIEW_MAX_KM * 1000 || z < 8) return;
+        localStorage.setItem(VIEW_KEY, JSON.stringify({ lat: +c.lat.toFixed(5), lon: +c.lng.toFixed(5), zoom: z }));
+      } catch (e) { /* no storage */ }
+    }, 800);
+  }
+  map.on('moveend', saveView);
+
   mobileQuery.addEventListener('change', (e) => {
     isMobile = e.matches;
     prevIconTier = getIconTier();
@@ -2776,29 +3059,57 @@ document.addEventListener('DOMContentLoaded', function() {
   const STALE_THRESHOLD_SECONDS = 90;
 
   function formatStaleAge(ageSeconds) {
+    if (ageSeconds < 60) return `${Math.floor(ageSeconds)} s`;
     const mins = Math.floor(ageSeconds / 60);
     if (mins < 60) return `${mins} min`;
     const hours = Math.floor(mins / 60);
     return `${hours} h ${mins % 60} min`;
   }
 
-  function updateStaleBanner(dataTimestamp) {
-    if (!dataTimestamp) return;
-    const ageSeconds = Date.now() / 1000 - dataTimestamp;
-    let banner = document.getElementById('stale-banner');
+  // One banner, two reasons: this page has lost contact with the server, or
+  // the server answers but its data is old. Without it the map looks live
+  // while every vehicle stands still.
+  const NO_CONTACT_SECONDS = 10;
+  const FETCH_TIMEOUT_MS = 8000;
+  let _lastContactAt = performance.now();
+  let _lastDataTimestamp = 0;
 
-    if (ageSeconds > STALE_THRESHOLD_SECONDS) {
-      if (!banner) {
-        banner = document.createElement('div');
-        banner.id = 'stale-banner';
-        banner.className = 'stale-banner';
-        document.body.appendChild(banner);
-      }
-      banner.textContent =
-        `⚠️ Trafiklabs realtidsdata verkar ligga nere — visar positioner från ${formatStaleAge(ageSeconds)} sedan`;
-    } else if (banner) {
-      banner.remove();
+  function showStaleBanner(text) {
+    let banner = document.getElementById('stale-banner');
+    if (!text) { if (banner) banner.remove(); return; }
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'stale-banner';
+      banner.className = 'stale-banner';
+      banner.setAttribute('role', 'status');
+      document.body.appendChild(banner);
     }
+    if (banner.textContent !== text) banner.textContent = text;
+  }
+
+  function updateStaleBanner(dataTimestamp) {
+    if (dataTimestamp) _lastDataTimestamp = dataTimestamp;
+    const silentSeconds = (performance.now() - _lastContactAt) / 1000;
+    const ageSeconds = _lastDataTimestamp ? Date.now() / 1000 - _lastDataTimestamp : 0;
+    if (silentSeconds > NO_CONTACT_SECONDS) {
+      showStaleBanner(`⚠️ Ingen kontakt med servern — visar positioner från ${formatStaleAge(silentSeconds)} sedan`);
+    } else if (ageSeconds > STALE_THRESHOLD_SECONDS) {
+      showStaleBanner(`⚠️ Trafiklabs realtidsdata verkar ligga nere — visar positioner från ${formatStaleAge(ageSeconds)} sedan`);
+    } else {
+      showStaleBanner('');
+    }
+  }
+
+  // fetch() has no timeout of its own: one request that never answers would
+  // block every later poll, because only one runs at a time.
+  function fetchWithTimeout(url, ms) {
+    if (typeof AbortController === 'undefined') return fetch(url);
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    return fetch(url, { signal: ctl.signal }).finally(() => clearTimeout(timer));
+  }
+  function withTimeout(promise, ms) {
+    return Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(null), ms))]);
   }
 
   // A slow poll must not overlap the next one, and a response that arrives
@@ -2807,18 +3118,24 @@ document.addEventListener('DOMContentLoaded', function() {
   let _vehicleGeneration = 0;
 
   async function fetchVehicles(initialResponse) {
+    // Runs on every tick, also while a request is out, so the banner appears
+    // although nothing comes back.
+    updateStaleBanner();
     if (_vehicleInFlight) return;
     _vehicleInFlight = true;
     const generation = _vehicleGeneration;
     try {
+      const sentSince = _lastVehicleTs;
       const url = _lastVehicleTs ? `/api/vehicles?since=${_lastVehicleTs}` : '/api/vehicles';
-      const prefetched = initialResponse ? await initialResponse : null;
-      const resp = prefetched || await fetch(url);
+      const prefetched = initialResponse ? await withTimeout(initialResponse, FETCH_TIMEOUT_MS) : null;
+      const resp = prefetched || await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
       if (!resp.ok) {
         plausible('API Error', { props: { status: String(resp.status) } });
         throw new Error(`HTTP ${resp.status}`);
       }
       const data = await resp.json();
+      _lastContactAt = performance.now();
+      if (ssShareOut && !initialResponse) ssShareOut(data, sentSince);
 
       if (data.error) {
         console.warn('Vehicle API error:', data.error);
@@ -2862,6 +3179,7 @@ document.addEventListener('DOMContentLoaded', function() {
       // updateVehicles yields between batches; a reset may have landed while
       // it ran, in which case this count describes state that no longer exists.
       if (generation !== _vehicleGeneration) return;
+      _placeDirectly = false;
 
       document.getElementById('vehicle-count').textContent = visibleCount;
       document.getElementById('last-update').textContent =
@@ -2874,7 +3192,9 @@ document.addEventListener('DOMContentLoaded', function() {
       _vehicleGeneration++;
       _lastVehicleTs = null;
       _vehicleMap = {};
-      document.getElementById('last-update').textContent = 'Fel vid hämtning: ' + err.message;
+      _lastDataTimestamp = 0;   // how old the data is, is unknown until the next answer
+      document.getElementById('last-update').textContent =
+        'Fel vid hämtning: ' + (err && err.name === 'AbortError' ? 'inget svar' : err.message);
     } finally {
       _vehicleInFlight = false;
     }
@@ -2929,6 +3249,7 @@ document.addEventListener('DOMContentLoaded', function() {
   let _versionInterval = null;
 
   function startPolling() {
+    if (!ssMayPoll()) return;
     if (!_vehicleInterval) {
       _vehicleInterval = setInterval(fetchVehicles, POLL_INTERVAL);
     }
@@ -2949,18 +3270,25 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function onHidden() {
-    if (isScreensaver) return; // screensaver never pauses
+    if (isScreensaver) return; // the display watch decides
     stopPolling();
   }
 
-  function onVisible() {
-    if (isScreensaver) return;
+  function resumePolling() {
     // Delta snapshot may be stale after long pause — force full fetch
     _lastVehicleTs = null;
     _vehicleMap = {};
+    _placeDirectly = true;
+    _lastContactAt = performance.now();   // give the first request its ten seconds
+    _lastDataTimestamp = 0;               // unknown until that request answers
     fetchVehicles();
     fetchVisitors();
     startPolling();
+  }
+
+  function onVisible() {
+    if (isScreensaver) return; // the display watch decides
+    resumePolling();
   }
 
   // Primary: Page Visibility API
@@ -2999,6 +3327,7 @@ document.addEventListener('DOMContentLoaded', function() {
     fetchVisitors();
 
     await firstVehicles;
+    ssReady = true;
     startPolling();
 
     // Service worker: cache:ar bara statiska resurser (HTML/API rörs ej)

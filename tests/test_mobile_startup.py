@@ -94,4 +94,4 @@ def test_initial_vehicle_payload_starts_before_leaflet_is_ready():
         '<script src="/site-config.js?v=3"></script>'
     )
     assert "fetchVehicles(window.__initialVehicles)" in html
-    assert "const resp = prefetched || await fetch(url)" in html
+    assert "const resp = prefetched || await fetchWithTimeout(url, FETCH_TIMEOUT_MS)" in html
